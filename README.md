@@ -2,7 +2,7 @@
 
 Native Rust migration work for [OpenBiohazard2](../OpenBiohazard2). The original Go project remains untouched and is the behavioral reference for later migration stages.
 
-This first stage only creates a 640×480 SDL2 window with an OpenGL ES 2.0 context, initializes the viewport, clears the framebuffer with the GPU, swaps buffers, and exits on `Esc` or the window close event. It does not load game data, textures, shaders, models, or Resident Evil 2 files.
+The current stage creates a 640×480 SDL2 window with an OpenGL ES 2.0 context and renders a colored triangle from a vertex buffer using GLSL ES 1.00 shaders. It keeps the blue background, exits on `Esc` or the window close event, and prints the GL vendor, renderer, API version, shading-language version, and a renderer-name-based hardware/software assessment. It does not load game data, textures, models, or Resident Evil 2 files.
 
 ## Build on WSL
 
@@ -25,30 +25,29 @@ Run it from the project directory so the SDL library can use the WSL GUI backend
 cargo run --release
 ```
 
-The application prints the SDL video driver and the OpenGL ES vendor, renderer, and version after the context is created. `DISPLAY` or `WAYLAND_DISPLAY` must be available for a visible window. If the WSL session has no usable graphical backend, the compile checks still validate the code, while the graphical run is expected to fail during SDL window or context creation.
+After the context is created, the application prints the SDL video driver and `GL_VENDOR`, `GL_RENDERER`, `GL_VERSION`, and `GL_SHADING_LANGUAGE_VERSION`. The acceleration label uses known renderer-name patterns: `llvmpipe`/`softpipe` indicate software, and names such as `VC4`, `V3D`, `VideoCore`, or `Broadcom` indicate hardware; unfamiliar names are reported as undetermined. `DISPLAY` or `WAYLAND_DISPLAY` must be available for a visible window. If the WSL session has no usable graphical backend, the compile checks still validate the code, while the graphical run may fail during SDL window or context creation.
 
 ## Raspberry Pi Zero 2 W
 
-The target is a 64-bit ARM Cortex-A53 system with 512 MB RAM and VideoCore IV OpenGL ES 1.1/2.0 support. Confirm the runtime architecture and the active SDL video drivers on the device before running:
+The Zero 2 W uses a quad-core ARM Cortex-A53 and VideoCore IV with OpenGL ES 1.1/2.0 support. Raspberry Pi OS may be 32-bit or 64-bit; compiling directly on the Pi selects the installed OS ABI. Confirm it and the active SDL video driver before running:
 
 ```bash
 uname -m
 which cargo
-SDL_VIDEODRIVER=dummy cargo run --release
 ```
 
-The `dummy` command only checks process startup paths and cannot create the requested OpenGL ES window. For a console session with KMS/DRM, use the physical display and the `kmsdrm` backend:
+For a console session with KMS/DRM, use the physical display and the `kmsdrm` backend:
 
 ```bash
 sudo apt update
 sudo apt install build-essential pkg-config libsdl2-dev libdrm-dev libgbm-dev
 
-cd /home/alex/residentEvil2Arm/OpenBiohazard2-Rust
-cargo build --release
+cd ~/OpenBiohazard2-Rust
+CARGO_BUILD_JOBS=1 cargo build --release
 SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust
 ```
 
-The process needs access to the DRM device and input devices. Run it locally on the Pi while diagnosing permissions, and check `ls -l /dev/dri/card* /dev/input/event*` before changing group membership. No Xorg installation is required for the KMSDRM path. The actual Pi runtime and ARM cross-compilation have not been validated in this workspace.
+The process needs access to the DRM device and input devices. Run it locally on the Pi while diagnosing permissions, and check `ls -l /dev/dri/card* /dev/input/event*` before changing group membership. No Xorg installation is required for the KMSDRM path. On the Pi 0–3, Mesa's VC4 driver supports GLES2; its renderer name should identify VC4/VideoCore/Broadcom. The renderer classification is a string-based diagnostic, so inspect the printed `GL_RENDERER` value if it reports “undetermined”. This workspace has no Pi graphics device, so the new triangle and runtime driver strings still need to be confirmed on the Pi.
 
 ## Migration notes
 

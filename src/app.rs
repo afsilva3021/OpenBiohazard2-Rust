@@ -40,7 +40,8 @@ pub fn run() -> AppResult<()> {
     print_graphics_information(&video);
 
     let (drawable_width, drawable_height) = window.drawable_size();
-    let mut renderer = Renderer::new(drawable_width, drawable_height);
+    let mut renderer = Renderer::new(drawable_width, drawable_height)
+        .map_err(|error| sdl_error("initialize the GLES renderer", error))?;
     let mut events = sdl
         .event_pump()
         .map_err(|error| sdl_error("create the SDL2 event pump", error))?;
@@ -85,19 +86,69 @@ fn configure_opengles(video: &sdl2::VideoSubsystem) {
 
 fn print_graphics_information(video: &sdl2::VideoSubsystem) {
     let sdl_driver = video.current_video_driver();
+    let vendor = gl_string(gl::VENDOR);
+    let renderer = gl_string(gl::RENDERER);
+
     println!("SDL video driver: {sdl_driver}");
+    println!("GL_VENDOR: {}", vendor.as_deref().unwrap_or("unknown"));
+    println!("GL_RENDERER: {}", renderer.as_deref().unwrap_or("unknown"));
     println!(
-        "OpenGL ES vendor: {}",
-        gl_string(gl::VENDOR).as_deref().unwrap_or("unknown")
-    );
-    println!(
-        "OpenGL ES renderer: {}",
-        gl_string(gl::RENDERER).as_deref().unwrap_or("unknown")
-    );
-    println!(
-        "OpenGL ES version: {}",
+        "GL_VERSION: {}",
         gl_string(gl::VERSION).as_deref().unwrap_or("unknown")
     );
+    println!(
+        "GL_SHADING_LANGUAGE_VERSION: {}",
+        gl_string(gl::SHADING_LANGUAGE_VERSION)
+            .as_deref()
+            .unwrap_or("unknown")
+    );
+    println!(
+        "GPU acceleration (GL_RENDERER heuristic): {}",
+        acceleration_status(renderer.as_deref())
+    );
+}
+
+fn acceleration_status(renderer: Option<&str>) -> &'static str {
+    let Some(renderer) = renderer else {
+        return "undetermined (GL_RENDERER unavailable)";
+    };
+    let renderer = renderer.to_ascii_lowercase();
+
+    if [
+        "llvmpipe",
+        "softpipe",
+        "swrast",
+        "software rasterizer",
+        "swiftshader",
+        "lavapipe",
+    ]
+    .iter()
+    .any(|software_name| renderer.contains(software_name))
+    {
+        return "software renderer detected";
+    }
+
+    if [
+        "vc4",
+        "v3d",
+        "videocore",
+        "broadcom",
+        "mali",
+        "adreno",
+        "powervr",
+        "nvidia",
+        "radeon",
+        "amd",
+        "intel",
+        "apple gpu",
+    ]
+    .iter()
+    .any(|hardware_name| renderer.contains(hardware_name))
+    {
+        return "hardware renderer identified";
+    }
+
+    "undetermined (check the GL_RENDERER driver name)"
 }
 
 fn gl_string(name: u32) -> Option<String> {
