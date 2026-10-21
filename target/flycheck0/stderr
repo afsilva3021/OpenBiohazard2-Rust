@@ -1,9 +1,0 @@
-   Compiling khronos_api v3.1.0
-   Compiling libc v0.2.191
-   Compiling sdl2 v0.38.0
-   Compiling sdl2-sys v0.38.0
-error: could not compile `sdl2` (build script) due to 1 previous error
-warning: build failed, waiting for other jobs to finish...
-error: could not compile `khronos_api` (build script) due to 1 previous error
-error: could not compile `sdl2-sys` (build script) due to 1 previous error
-error: could not compile `libc` (build script) due to 1 previous error

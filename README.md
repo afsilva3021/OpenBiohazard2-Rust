@@ -2,7 +2,7 @@
 
 Native Rust migration work for [OpenBiohazard2](../OpenBiohazard2). The original Go project remains untouched and is the behavioral reference for later migration stages.
 
-The current stage creates a 640×480 SDL2 window with an OpenGL ES 2.0 context and renders a colored triangle from a vertex buffer using GLSL ES 1.00 shaders. It keeps the blue background, exits on `Esc` or the window close event, and prints the GL vendor, renderer, API version, shading-language version, and a renderer-name-based hardware/software assessment. It does not load game data, textures, models, or Resident Evil 2 files.
+The current stage creates a 640×480 SDL2 window with an OpenGL ES 2.0 context and displays `assets/test_texture.png` on a two-triangle rectangle using a VBO and GLSL ES 1.00 shaders. It keeps the blue background, preserves the image aspect ratio when the window is resized, exits on `Esc` or the window close event, and prints the GL vendor, renderer, API version, shading-language version, and a renderer-name-based hardware/software assessment. The PNG decoder produces RGBA pixels for a direct `glTexImage2D` upload; no game data or proprietary files are loaded.
 
 ## Build on WSL
 
@@ -25,7 +25,7 @@ Run it from the project directory so the SDL library can use the WSL GUI backend
 cargo run --release
 ```
 
-After the context is created, the application prints the SDL video driver and `GL_VENDOR`, `GL_RENDERER`, `GL_VERSION`, and `GL_SHADING_LANGUAGE_VERSION`. The acceleration label uses known renderer-name patterns: `llvmpipe`/`softpipe` indicate software, and names such as `VC4`, `V3D`, `VideoCore`, or `Broadcom` indicate hardware; unfamiliar names are reported as undetermined. `DISPLAY` or `WAYLAND_DISPLAY` must be available for a visible window. If the WSL session has no usable graphical backend, the compile checks still validate the code, while the graphical run may fail during SDL window or context creation.
+Run from the project directory so the application can find `assets/test_texture.png`. After the context is created, it prints the SDL video driver and `GL_VENDOR`, `GL_RENDERER`, `GL_VERSION`, and `GL_SHADING_LANGUAGE_VERSION`. The acceleration label uses known renderer-name patterns: `llvmpipe`/`softpipe` indicate software, and names such as `VC4`, `V3D`, `VideoCore`, or `Broadcom` indicate hardware; unfamiliar names are reported as undetermined. `DISPLAY` or `WAYLAND_DISPLAY` must be available for a visible window. If the WSL session has no usable graphical backend, the compile checks still validate the code, while the graphical run may fail during SDL window or context creation.
 
 ## Raspberry Pi Zero 2 W
 
@@ -43,11 +43,16 @@ sudo apt update
 sudo apt install build-essential pkg-config libsdl2-dev libdrm-dev libgbm-dev
 
 cd ~/OpenBiohazard2-Rust
+CARGO_BUILD_JOBS=1 cargo fmt --check
+CARGO_BUILD_JOBS=1 cargo check
+CARGO_BUILD_JOBS=1 cargo clippy --all-targets --all-features -- -D warnings
 CARGO_BUILD_JOBS=1 cargo build --release
 SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust
 ```
 
-The process needs access to the DRM device and input devices. Run it locally on the Pi while diagnosing permissions, and check `ls -l /dev/dri/card* /dev/input/event*` before changing group membership. No Xorg installation is required for the KMSDRM path. On the Pi 0–3, Mesa's VC4 driver supports GLES2; its renderer name should identify VC4/VideoCore/Broadcom. The renderer classification is a string-based diagnostic, so inspect the printed `GL_RENDERER` value if it reports “undetermined”. This workspace has no Pi graphics device, so the new triangle and runtime driver strings still need to be confirmed on the Pi.
+Run the final command from the project directory; the test PNG is loaded from `assets/test_texture.png`.
+
+The process needs access to the DRM device and input devices. Run it locally on the Pi while diagnosing permissions, and check `ls -l /dev/dri/card* /dev/input/event*` before changing group membership. No Xorg installation is required for the KMSDRM path. On the Pi 0–3, Mesa's VC4 driver supports GLES2; its renderer name should identify VC4/VideoCore/Broadcom. The renderer classification is a string-based diagnostic, so inspect the printed `GL_RENDERER` value if it reports “undetermined”. This workspace has no Pi graphics device, so the textured rectangle and runtime driver strings still need to be confirmed on the Pi.
 
 ## Migration notes
 

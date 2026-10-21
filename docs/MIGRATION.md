@@ -2,7 +2,7 @@
 
 ## Scope of this document
 
-The source of truth inspected for the migration is the existing project at `../OpenBiohazard2`. Its directory was not modified, reorganized, or copied into the Rust project. The Rust implementation currently covers the SDL2/GLES 2.0 bootstrap and the second-stage shader/VBO triangle.
+The source of truth inspected for the migration is the existing project at `../OpenBiohazard2`. Its directory was not modified, reorganized, or copied into the Rust project. The Rust implementation currently covers the SDL2/GLES 2.0 bootstrap and a PNG texture-rendering probe.
 
 ## Current Go architecture
 
@@ -32,9 +32,9 @@ The principal modules are:
 | `main.go` | Startup, game initialization, state dispatch | `src/main.rs`, `src/app.rs` | Bootstrap only |
 | `client/windowhandler.go` | GLFW window, context, swap, resize, frame timing | `src/app.rs` plus a future `platform` module | SDL2 window and event loop implemented |
 | `client/inputhandler.go` | Key and mouse action mapping | Future `src/input.rs` | Not started |
-| `render/rendermain.go` | Renderer setup and frame orchestration | `src/graphics/renderer.rs` | Blue clear and test triangle only |
-| `render/opengl_renderer.go` | VAO/VBO/attributes, textures, draw calls | Future graphics modules | GLES2 VBO attributes and triangle draw only |
-| `shader/shader.go` | Shader file loading, compilation, linking | `src/graphics/renderer.rs` for this probe; future `src/graphics/shader.rs` | In-memory GLSL ES 1.00 compile/link with error logs |
+| `render/rendermain.go` | Renderer setup and frame orchestration | `src/graphics/renderer.rs` | Blue clear and textured test rectangle only |
+| `render/opengl_renderer.go` | VAO/VBO/attributes, textures, draw calls | Future graphics modules | GLES2 VBO, UVs, PNG texture upload and two-triangle draw only |
+| `shader/shader.go` | Shader file loading, compilation, linking | `src/graphics/renderer.rs` for this probe; future `src/graphics/shader.rs` | In-memory GLSL ES 1.00 texture shaders with compile/link error logs |
 | `shader/shadersystem.go` | Program lifetime and uniform cache | Future `src/graphics/shader.rs` | Not started |
 | `shader/openbiohazard2.vert` | Desktop GLSL vertex shader | Future GLES shader asset | Requires adaptation |
 | `shader/openbiohazard2.frag` | Desktop GLSL fragment shader | Future GLES shader asset | Requires adaptation |
@@ -48,9 +48,9 @@ The Go dependency configuration is in `go.mod`: Go 1.23, `go-gl/gl`, `go-gl/glfw
 
 The existing `client/windowhandler.go` requests OpenGL 3.3 core, forward-compatible, through GLFW. It swaps buffers before polling events and closes when the mapped Escape action is active. The Rust bootstrap changes the window size to the stage requirement of `640×480`, requests `GLProfile::GLES` version `2.0` through SDL2, polls SDL events, handles `Esc` and `Quit`, updates the viewport after resize, clears the color buffer, and swaps buffers.
 
-The existing `render/rendermain.go` loads desktop OpenGL functions, sets a black clear color, enables depth testing, multisampling, and alpha blending, then initializes shaders and scene systems. The Rust renderer retains its blue clear and now compiles minimal GLSL ES 1.00 shaders, uploads interleaved position/color data to a VBO, and draws three vertices with `glDrawArrays`. It uses no VAO or desktop-only API.
+The existing `render/rendermain.go` loads desktop OpenGL functions, sets a black clear color, enables depth testing, multisampling, and alpha blending, then initializes shaders and scene systems. The Rust renderer retains its blue clear, decodes `assets/test_texture.png` to RGBA, uploads it with `glTexImage2D`, and draws a UV-mapped rectangle as six VBO vertices. The GLSL ES 1.00 fragment shader samples it with `texture2D`; filtering and clamp-to-edge parameters support non-power-of-two dimensions in GLES 2.0. The viewport-fit scale preserves the image aspect ratio. The PNG pixel buffer is passed directly to the GL upload and released after the call; the GPU texture is deleted when the renderer is dropped. No VAO or desktop-only API is used.
 
-The current Go shaders are not portable to the requested GLES 2.0 profile without changes. They declare `#version 410`, use desktop shader interfaces such as `layout` and `out`, and rely on operations such as matrix inversion. The Rust triangle probe uses GLSL ES 1.00 syntax (`attribute`, `varying`, `gl_FragColor`) and a fragment precision declaration. It logs compile and link info logs on failure. The Go shaders remain unported.
+The current Go shaders are not portable to the requested GLES 2.0 profile without changes. They declare `#version 410`, use desktop shader interfaces such as `layout` and `out`, and rely on operations such as matrix inversion. The Rust texture probe uses GLSL ES 1.00 syntax (`attribute`, `varying`, `texture2D`, `gl_FragColor`) and a fragment precision declaration. It logs compile and link info logs on failure. The Go shaders remain unported.
 
 The Go renderer also assumes desktop OpenGL objects and functions. In particular, VAO use, shader interfaces, multisampling, and the complete texture/depth pipeline need an explicit GLES compatibility pass. VAOs may require an extension on GLES 2.0, so they must not be treated as available until the runtime extension string is checked or the renderer is written around VBO state without them.
 
@@ -64,20 +64,22 @@ WSL exposes both `DISPLAY` and `WAYLAND_DISPLAY` in the current environment, but
 
 | File | Purpose |
 | --- | --- |
-| `Cargo.toml` | Rust package metadata and SDL2/OpenGL function-loading dependencies |
+| `Cargo.toml` | Rust package metadata, SDL2/OpenGL function loading, and pure-Rust PNG decoding |
 | `Cargo.lock` | Locked dependency versions generated by Cargo |
 | `src/main.rs` | Process entry point and top-level error reporting |
 | `src/app.rs` | SDL2 initialization, GLES 2.0 context, event loop, GL context details, and acceleration assessment |
 | `src/graphics/mod.rs` | Graphics module boundary |
-| `src/graphics/renderer.rs` | GLSL ES 1.00 compile/link, VBO setup, viewport, blue clear, and triangle draw |
+| `src/graphics/renderer.rs` | GLSL ES 1.00 compile/link, VBO/UV setup, aspect-preserving viewport fit, blue clear, and rectangle draw |
+| `src/graphics/texture.rs` | PNG decode to RGBA, GLES2-compatible texture upload, texture lifetime |
+| `assets/test_texture.png` | Non-proprietary 320×180 RGBA test image with transparency and orientation colors |
 | `README.md` | Build/run instructions, Pi notes, and stage boundary |
 | `docs/MIGRATION.md` | Go analysis, module mapping, portability findings, and validation report |
 
-No Resident Evil 2 game data, proprietary files, textures, models, or scenario loaders were added. The only triangle is a three-vertex graphics probe.
+No Resident Evil 2 game data, proprietary files, models, or scenario loaders were added. The only image is a generated test pattern.
 
 ## Validation report
 
-The commands below were run in the WSL workspace after implementing the shader/VBO triangle:
+The commands below were run in the WSL workspace after implementing PNG texturing:
 
 | Command | Result |
 | --- | --- |
@@ -86,10 +88,10 @@ The commands below were run in the WSL workspace after implementing the shader/V
 | `cargo clippy --offline --all-targets --all-features -- -D warnings` | Blocked before linting by the missing `cc` linker |
 | `cargo build --release` | Blocked before project compilation because `cc` is missing; SDL2 development libraries are also absent in WSL |
 | WSL graphics run | Not reached; the binary could not be built in this workspace |
-| Raspberry Pi build/runtime | Stage one was reported working by the user; this second-stage triangle has not been run on the Pi yet |
+| Raspberry Pi build/runtime | Earlier stages were reported working by the user; this textured rectangle has not been run on the Pi yet |
 
 The graphical run is a separate validation from compilation. A WSL context creation failure must be reported as an environment limitation rather than treated as evidence that the Rust source fails to compile.
 
 ## Next migration step
 
-After this stage is verified on the Pi, assess GLES2 shader/runtime limits before porting the game renderer or loading assets. Do not start other module migrations until the triangle and driver report are confirmed.
+Do not start other migration work until the PNG texture has been confirmed on the Pi.

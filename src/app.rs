@@ -40,7 +40,7 @@ pub fn run() -> AppResult<()> {
     print_graphics_information(&video);
 
     let (drawable_width, drawable_height) = window.drawable_size();
-    let mut renderer = Renderer::new(drawable_width, drawable_height)
+    let mut renderer = Renderer::new(drawable_width, drawable_height, "assets/test_texture.png")
         .map_err(|error| sdl_error("initialize the GLES renderer", error))?;
     let mut events = sdl
         .event_pump()
