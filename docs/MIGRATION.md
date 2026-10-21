@@ -1,5 +1,6 @@
 # OpenBiohazard2 Go → Rust
 
+
 ## Scope of this document
 
 The source of truth inspected for the migration is the existing project at `../OpenBiohazard2`. Its directory was not modified, reorganized, or copied into the Rust project. The Rust implementation currently covers the SDL2/GLES 2.0 bootstrap and a PNG texture-rendering probe.
@@ -46,7 +47,7 @@ The Go dependency configuration is in `go.mod`: Go 1.23, `go-gl/gl`, `go-gl/glfw
 
 ## Window, renderer, and shader findings
 
-The existing `client/windowhandler.go` requests OpenGL 3.3 core, forward-compatible, through GLFW. It swaps buffers before polling events and closes when the mapped Escape action is active. The Rust bootstrap changes the window size to the stage requirement of `640×480`, requests `GLProfile::GLES` version `2.0` through SDL2, polls SDL events, handles `Esc` and `Quit`, updates the viewport after resize, clears the color buffer, and swaps buffers.
+The existing `client/windowhandler.go` requests OpenGL 3.3 core, forward-compatible, through GLFW. It swaps buffers before polling events and closes when the mapped Escape action is active. The Rust bootstrap changes the window size to the stage requirement of `640×480`, requests `GLProfile::GLES` version `2.0` through SDL2, attempts SDL VSync with a non-fatal warning if unavailable, polls SDL events, handles `Esc` and `Quit`, and updates the viewport from the drawable framebuffer dimensions after resize.
 
 The existing `render/rendermain.go` loads desktop OpenGL functions, sets a black clear color, enables depth testing, multisampling, and alpha blending, then initializes shaders and scene systems. The Rust renderer retains its blue clear, decodes `assets/test_texture.png` to RGBA, uploads it with `glTexImage2D`, and draws a UV-mapped rectangle as six VBO vertices. The GLSL ES 1.00 fragment shader samples it with `texture2D`; filtering and clamp-to-edge parameters support non-power-of-two dimensions in GLES 2.0. The viewport-fit scale preserves the image aspect ratio. The PNG pixel buffer is passed directly to the GL upload and released after the call; the GPU texture is deleted when the renderer is dropped. No VAO or desktop-only API is used.
 
@@ -77,6 +78,10 @@ WSL exposes both `DISPLAY` and `WAYLAND_DISPLAY` in the current environment, but
 
 No Resident Evil 2 game data, proprietary files, models, or scenario loaders were added. The only image is a generated test pattern.
 
+## Local and remote branch comparison
+
+The fetched GitHub `main` was `927697e`; local `main` is `eb75276`, three commits ahead and zero behind. The fetched renderer draws three vertices and has no texture upload; the local commits contain the PNG decoder and textured rectangle. The local branch has no configured upstream. The pre-existing working-tree deletion of `ResidentEvil2-Data.zip` was left untouched.
+
 ## Validation report
 
 The commands below were run in the WSL workspace after implementing PNG texturing:
@@ -87,8 +92,10 @@ The commands below were run in the WSL workspace after implementing PNG texturin
 | `cargo check --offline` | Blocked before project type checking: `cc` is not installed in this WSL image |
 | `cargo clippy --offline --all-targets --all-features -- -D warnings` | Blocked before linting by the missing `cc` linker |
 | `cargo build --release` | Blocked before project compilation because `cc` is missing; SDL2 development libraries are also absent in WSL |
+| `cargo metadata --offline --format-version 1` / `cargo tree --offline` | Passed |
+| `git diff --check` | Passed |
 | WSL graphics run | Not reached; the binary could not be built in this workspace |
-| Raspberry Pi build/runtime | Earlier stages were reported working by the user; this textured rectangle has not been run on the Pi yet |
+| Raspberry Pi build/runtime | Earlier stages were reported working by the user; VSync and framebuffer resize changes plus the textured rectangle still need a Pi run |
 
 The graphical run is a separate validation from compilation. A WSL context creation failure must be reported as an environment limitation rather than treated as evidence that the Rust source fails to compile.
 

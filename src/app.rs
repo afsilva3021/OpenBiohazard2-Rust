@@ -3,7 +3,7 @@ use std::{error::Error, ffi::CStr, io};
 use sdl2::{
     event::{Event, WindowEvent},
     keyboard::Keycode,
-    video::GLProfile,
+    video::{GLProfile, SwapInterval},
 };
 
 use crate::graphics::renderer::Renderer;
@@ -35,6 +35,7 @@ pub fn run() -> AppResult<()> {
     window
         .gl_make_current(&gl_context)
         .map_err(|error| sdl_error("make the OpenGL ES context current", error))?;
+    configure_vsync(&video);
 
     gl::load_with(|name| video.gl_get_proc_address(name) as *const _);
     print_graphics_information(&video);
@@ -56,13 +57,12 @@ pub fn run() -> AppResult<()> {
                     ..
                 } => break 'main_loop,
                 Event::Window {
-                    win_event: WindowEvent::Resized(width, height),
+                    win_event: WindowEvent::Resized(..) | WindowEvent::SizeChanged(..),
                     ..
+                } => {
+                    let (drawable_width, drawable_height) = window.drawable_size();
+                    renderer.resize(drawable_width, drawable_height);
                 }
-                | Event::Window {
-                    win_event: WindowEvent::SizeChanged(width, height),
-                    ..
-                } => renderer.resize(width.max(1) as u32, height.max(1) as u32),
                 _ => {}
             }
         }
@@ -82,6 +82,13 @@ fn configure_opengles(video: &sdl2::VideoSubsystem) {
     gl_attributes.set_context_profile(GLProfile::GLES);
     gl_attributes.set_context_version(2, 0);
     gl_attributes.set_double_buffer(true);
+}
+
+fn configure_vsync(video: &sdl2::VideoSubsystem) {
+    match video.gl_set_swap_interval(SwapInterval::VSync) {
+        Ok(()) => println!("SDL swap interval: VSync enabled"),
+        Err(error) => eprintln!("SDL could not enable VSync; continuing without it: {error}"),
+    }
 }
 
 fn print_graphics_information(video: &sdl2::VideoSubsystem) {
