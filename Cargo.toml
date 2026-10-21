@@ -1,0 +1,11 @@
+[package]
+name = "openbiohazard2-rust"
+version = "0.1.0"
+edition = "2021"
+description = "Native Rust migration foundation for OpenBiohazard2"
+license = "MIT"
+publish = false
+
+[dependencies]
+gl = "0.14.0"
+sdl2 = { version = "0.38.0", default-features = false }
