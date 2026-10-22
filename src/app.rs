@@ -1,4 +1,4 @@
-use std::{error::Error, ffi::CStr, io};
+use std::{error::Error, ffi::CStr, io, path::PathBuf};
 
 use sdl2::{
     event::{Event, WindowEvent},
@@ -13,7 +13,17 @@ const WINDOW_HEIGHT: u32 = 480;
 
 type AppResult<T> = Result<T, Box<dyn Error>>;
 
-pub fn run() -> AppResult<()> {
+pub enum TextureSource {
+    Png(PathBuf),
+    Rgba {
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        description: String,
+    },
+}
+
+pub fn run(source: TextureSource) -> AppResult<()> {
     let sdl = sdl2::init().map_err(|error| sdl_error("initialize SDL2", error))?;
     let video = sdl
         .video()
@@ -41,8 +51,24 @@ pub fn run() -> AppResult<()> {
     print_graphics_information(&video);
 
     let (drawable_width, drawable_height) = window.drawable_size();
-    let mut renderer = Renderer::new(drawable_width, drawable_height, "assets/test_texture.png")
-        .map_err(|error| sdl_error("initialize the GLES renderer", error))?;
+    let mut renderer = match source {
+        TextureSource::Png(path) => Renderer::new(drawable_width, drawable_height, path)
+            .map_err(|error| sdl_error("load the PNG texture", error))?,
+        TextureSource::Rgba {
+            width,
+            height,
+            pixels,
+            description,
+        } => Renderer::from_rgba(
+            drawable_width,
+            drawable_height,
+            width,
+            height,
+            pixels,
+            &description,
+        )
+        .map_err(|error| sdl_error("load the ADT texture", error))?,
+    };
     let mut events = sdl
         .event_pump()
         .map_err(|error| sdl_error("create the SDL2 event pump", error))?;

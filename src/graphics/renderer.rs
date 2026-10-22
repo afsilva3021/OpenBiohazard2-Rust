@@ -1,4 +1,4 @@
-use std::{ffi::CString, mem, ptr};
+use std::{ffi::CString, mem, path::Path, ptr};
 
 use super::texture::Texture;
 
@@ -40,9 +40,29 @@ impl Renderer {
     pub fn new(
         viewport_width: u32,
         viewport_height: u32,
-        texture_path: &str,
+        texture_path: impl AsRef<Path>,
     ) -> Result<Self, String> {
         let texture = Texture::load_png(texture_path)?;
+        Self::with_texture(viewport_width, viewport_height, texture)
+    }
+
+    pub fn from_rgba(
+        viewport_width: u32,
+        viewport_height: u32,
+        image_width: u32,
+        image_height: u32,
+        pixels: Vec<u8>,
+        source: &str,
+    ) -> Result<Self, String> {
+        let texture = Texture::from_rgba(image_width, image_height, pixels, source)?;
+        Self::with_texture(viewport_width, viewport_height, texture)
+    }
+
+    fn with_texture(
+        viewport_width: u32,
+        viewport_height: u32,
+        texture: Texture,
+    ) -> Result<Self, String> {
         let image_aspect = texture.width() as f32 / texture.height() as f32;
         let ProgramBindings {
             program,

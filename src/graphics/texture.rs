@@ -87,7 +87,16 @@ impl Texture {
             }
         }
 
-        upload_rgba(path, width, height, &pixels)
+        Self::upload_rgba(width, height, pixels, &path.display().to_string())
+    }
+
+    pub(super) fn from_rgba(
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        source: &str,
+    ) -> Result<Self, String> {
+        Self::upload_rgba(width, height, pixels, source)
     }
 
     pub fn id(&self) -> gl::types::GLuint {
@@ -111,7 +120,7 @@ impl Drop for Texture {
     }
 }
 
-fn validate_dimensions(path: &Path, width: u32, height: u32) -> Result<(), String> {
+fn validate_dimensions(source: &Path, width: u32, height: u32) -> Result<(), String> {
     let mut max_texture_size = 0;
     unsafe { gl::GetIntegerv(gl::MAX_TEXTURE_SIZE, &mut max_texture_size) };
     if max_texture_size <= 0 {
@@ -123,8 +132,8 @@ fn validate_dimensions(path: &Path, width: u32, height: u32) -> Result<(), Strin
         || height > max_texture_size as u32
     {
         return Err(format!(
-            "PNG {} dimensions {width}×{height} exceed the supported texture size {max_texture_size}",
-            path.display()
+            "texture {} dimensions {width}×{height} exceed the supported texture size {max_texture_size}",
+            source.display()
         ));
     }
     Ok(())
@@ -133,63 +142,85 @@ fn validate_dimensions(path: &Path, width: u32, height: u32) -> Result<(), Strin
 fn pixel_count(width: u32, height: u32) -> Result<usize, String> {
     (width as usize)
         .checked_mul(height as usize)
-        .ok_or_else(|| "PNG dimensions overflow the address space".to_owned())
+        .ok_or_else(|| "texture dimensions overflow the address space".to_owned())
 }
 
-fn upload_rgba(path: &Path, width: u32, height: u32, pixels: &[u8]) -> Result<Texture, String> {
-    let mut id = 0;
-    unsafe { gl::GenTextures(1, &mut id) };
-    if id == 0 {
-        return Err("glGenTextures returned texture 0".to_owned());
-    }
-
-    let texture = Texture { id, width, height };
-    unsafe {
-        gl::BindTexture(gl::TEXTURE_2D, id);
-        gl::TexParameteri(
-            gl::TEXTURE_2D,
-            gl::TEXTURE_MIN_FILTER,
-            gl::LINEAR as gl::types::GLint,
-        );
-        gl::TexParameteri(
-            gl::TEXTURE_2D,
-            gl::TEXTURE_MAG_FILTER,
-            gl::LINEAR as gl::types::GLint,
-        );
-        // Clamp-to-edge plus linear filtering supports non-power-of-two images
-        // on OpenGL ES 2.0 without mipmaps.
-        gl::TexParameteri(
-            gl::TEXTURE_2D,
-            gl::TEXTURE_WRAP_S,
-            gl::CLAMP_TO_EDGE as gl::types::GLint,
-        );
-        gl::TexParameteri(
-            gl::TEXTURE_2D,
-            gl::TEXTURE_WRAP_T,
-            gl::CLAMP_TO_EDGE as gl::types::GLint,
-        );
-        gl::PixelStorei(gl::UNPACK_ALIGNMENT, 4);
-        gl::TexImage2D(
-            gl::TEXTURE_2D,
-            0,
-            gl::RGBA as gl::types::GLint,
-            width as gl::types::GLsizei,
-            height as gl::types::GLsizei,
-            0,
-            gl::RGBA,
-            gl::UNSIGNED_BYTE,
-            pixels.as_ptr().cast(),
-        );
-    }
-
-    let error = unsafe { gl::GetError() };
-    if error != gl::NO_ERROR {
-        return Err(format!(
-            "OpenGL ES failed to upload PNG {} (error 0x{error:04x})",
-            path.display()
+impl Texture {
+    fn upload_rgba(
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+        source: &str,
+    ) -> Result<Texture, String> {
+        let rgba_size = pixel_count(width, height)?
+            .checked_mul(4)
+            .ok_or_else(|| format!("texture {source} is too large"))?;
+        if width == 0 || height == 0 || pixels.len() != rgba_size {
+            return Err(format!(
+            "texture {source} has invalid RGBA dimensions {width}×{height} or buffer size {} (expected {rgba_size})",
+            pixels.len()
         ));
-    }
+        }
+        if width > i32::MAX as u32 || height > i32::MAX as u32 {
+            return Err(format!(
+                "texture {source} dimensions exceed OpenGL ES limits"
+            ));
+        }
+        validate_dimensions(Path::new(source), width, height)?;
 
-    println!("Loaded PNG texture: {} ({width}×{height})", path.display());
-    Ok(texture)
+        let mut id = 0;
+        unsafe { gl::GenTextures(1, &mut id) };
+        if id == 0 {
+            return Err("glGenTextures returned texture 0".to_owned());
+        }
+
+        let texture = Texture { id, width, height };
+        unsafe {
+            gl::BindTexture(gl::TEXTURE_2D, id);
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_MIN_FILTER,
+                gl::LINEAR as gl::types::GLint,
+            );
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_MAG_FILTER,
+                gl::LINEAR as gl::types::GLint,
+            );
+            // Clamp-to-edge plus linear filtering supports non-power-of-two images
+            // on OpenGL ES 2.0 without mipmaps.
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_WRAP_S,
+                gl::CLAMP_TO_EDGE as gl::types::GLint,
+            );
+            gl::TexParameteri(
+                gl::TEXTURE_2D,
+                gl::TEXTURE_WRAP_T,
+                gl::CLAMP_TO_EDGE as gl::types::GLint,
+            );
+            gl::PixelStorei(gl::UNPACK_ALIGNMENT, 4);
+            gl::TexImage2D(
+                gl::TEXTURE_2D,
+                0,
+                gl::RGBA as gl::types::GLint,
+                width as gl::types::GLsizei,
+                height as gl::types::GLsizei,
+                0,
+                gl::RGBA,
+                gl::UNSIGNED_BYTE,
+                pixels.as_ptr().cast(),
+            );
+        }
+
+        let error = unsafe { gl::GetError() };
+        if error != gl::NO_ERROR {
+            return Err(format!(
+                "OpenGL ES failed to upload texture {source} (error 0x{error:04x})"
+            ));
+        }
+
+        println!("Loaded RGBA texture: {source} ({width}×{height})");
+        Ok(texture)
+    }
 }
