@@ -1,6 +1,6 @@
 # OpenBiohazard2-Rust
 
-Rust migration of [OpenBiohazard2](../OpenBiohazard2). The Go repository is the read-only behavioral reference. The current Rust stage keeps the SDL2/OpenGL ES 2.0 renderer and adds an ADT decompressor for independent `.adt` files and ADT streams inside the `roomcut.bin` archive.
+Rust migration of [OpenBiohazard2](../OpenBiohazard2). The Go repository is the read-only behavioral reference. The current Rust stage keeps the SDL2/OpenGL ES 2.0 renderer, decodes ADT backgrounds from independent `.adt` files or `roomcut.bin`, and reads RDT room headers and camera records.
 
 The 640×480 SDL2 window uses GLSL ES 1.00, a VBO rectangle made of two triangles, and a direct RGBA texture upload. The image is decoded once at startup, fitted to the drawable framebuffer without changing its aspect ratio, and released with the renderer. The blue clear color and Escape/close controls remain available. With no arguments the application still shows `assets/test_texture.png`.
 
@@ -27,6 +27,26 @@ SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --bin data/Common/bi
 SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --adt data/Common/Data/Title_bg.adt
 ```
 
+List the cameras in an RDT, including the corresponding `roomcut.bin` entry derived from the Go room/camera formula:
+
+```bash
+./target/release/openbiohazard2-rust --rdt data/Pl0/Rdt/ROOM1000.RDT
+```
+
+Render camera 0 from that RDT. The command derives entry 0 from `ROOM1000.RDT`; the optional final argument overrides the default BIN path:
+
+```bash
+SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt data/Pl0/Rdt/ROOM1000.RDT 0
+SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt data/Pl0/Rdt/ROOM1000.RDT 0 data/Common/bin/roomcut.bin
+```
+
+The parser reads the 100-byte RDT core header, RID camera records, and PRI mask counts. It does not compose camera masks or load other RDT sections. To validate/export a selected camera without opening SDL/OpenGL:
+
+```bash
+mkdir -p target/diagnostics
+./target/release/openbiohazard2-rust --decode-rdt data/Pl0/Rdt/ROOM1000.RDT 0 target/diagnostics/ROOM1000-camera0.png
+```
+
 Entry `0` in `roomcut.bin` maps to stage 1, room 0, camera 0 using the Go formula `((stage - 1) * 512) + (room * 16) + camera`. The Rust BIN reader keeps empty table slots so requested indices continue to refer to the original table positions.
 
 SDL prints its active video driver and `GL_VENDOR`, `GL_RENDERER`, `GL_VERSION`, and `GL_SHADING_LANGUAGE_VERSION`. The hardware/software label is a heuristic based on `GL_RENDERER`; check the printed driver string if it reports “undetermined”. Press `Esc` or close the window to exit.
@@ -49,4 +69,4 @@ For another explicit source, use `--adt INPUT.ADT`, `--bin INPUT.BIN ENTRY_INDEX
 
 The verified local layout includes `data/Common/bin/roomcut.bin` and standalone images under `data/Common/Data/`. The names are case-sensitive: the inspected install has `Data` and `Rdt`; do not rename them to `DATP` or `RDP`. `data/` and `target/` are ignored by Git. No game files or extracted PNGs are part of the repository.
 
-ADT backgrounds and one BIN entry are in scope. TIM masks following room backgrounds, RDT parsing, models, characters, room scripts, collision, and gameplay are not implemented in this stage. See [docs/MIGRATION.md](docs/MIGRATION.md) for Go/Rust mapping, comparison results, and known limitations.
+ADT backgrounds, the minimal RDT/RID camera metadata needed to identify room backgrounds, and the confirmed RDT-to-BIN index mapping are in scope. TIM mask composition, other RDT sections, models, characters, room scripts, collision, and gameplay are not implemented. See [docs/MIGRATION.md](docs/MIGRATION.md) for the Go/Rust mapping, camera data, validation results, and known limitations.
