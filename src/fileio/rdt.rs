@@ -4,6 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use super::{
+    adt::AdtImage,
+    bin::{BinArchive, BinEntry},
+};
+
 const RDT_HEADER_SIZE: usize = 8;
 const RDT_OFFSET_COUNT: usize = 23;
 const RDT_CORE_SIZE: usize = RDT_HEADER_SIZE + RDT_OFFSET_COUNT * 4;
@@ -131,6 +136,61 @@ pub struct RdtFile {
     pub identity: Option<RoomIdentity>,
 }
 
+pub struct RdtCameraImage {
+    pub camera_index: usize,
+    pub image_index: usize,
+    pub entry: BinEntry,
+    pub image: AdtImage,
+}
+
+pub struct RdtCameraSession {
+    rdt: RdtFile,
+    archive: BinArchive,
+}
+
+impl RdtCameraSession {
+    pub fn open(
+        rdt: RdtFile,
+        archive_path: impl AsRef<Path>,
+        initial_camera: usize,
+    ) -> Result<Self, String> {
+        // Resolve the camera and its Go-derived slot before opening or seeking the BIN.
+        rdt.background_image_index(initial_camera)?;
+        let archive = BinArchive::open(archive_path)?;
+        Ok(Self { rdt, archive })
+    }
+
+    pub fn rdt(&self) -> &RdtFile {
+        &self.rdt
+    }
+
+    pub fn archive_path(&self) -> &Path {
+        self.archive.path()
+    }
+
+    pub fn camera_count(&self) -> usize {
+        self.rdt.mapped_camera_count()
+    }
+
+    pub fn load_camera(&mut self, camera_index: usize) -> Result<RdtCameraImage, String> {
+        let image_index = self.rdt.background_image_index(camera_index)?;
+        let entry = self.archive.entry(image_index).map_err(|error| {
+            format!(
+                "RDT {} camera {camera_index} maps to roomcut entry {image_index}, but {}: {error}",
+                self.rdt.path.display(),
+                self.archive.path().display()
+            )
+        })?;
+        let image = self.archive.decode_adt_entry(image_index)?;
+        Ok(RdtCameraImage {
+            camera_index,
+            image_index,
+            entry,
+            image,
+        })
+    }
+}
+
 impl RdtFile {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
@@ -173,6 +233,24 @@ impl RdtFile {
                 self.cameras.len()
             )
         })
+    }
+
+    pub fn background_image_index(&self, camera: usize) -> Result<usize, String> {
+        self.camera(camera)?;
+        let identity = self.identity.ok_or_else(|| {
+            format!(
+                "cannot map camera to roomcut entry: RDT filename {} does not match Go's ROOM%01d%02x%01d.RDT format",
+                self.path.display()
+            )
+        })?;
+        identity.background_image_index(camera)
+    }
+
+    pub fn mapped_camera_count(&self) -> usize {
+        if self.identity.is_none() {
+            return 0;
+        }
+        self.cameras.len().min(ROOMCUT_ROOM_STRIDE)
     }
 
     fn parse(path: &Path, bytes: &[u8]) -> Result<Self, String> {
@@ -412,7 +490,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        calculate_fov_degrees, parse_pri_mask_count, RdtFile, RoomIdentity, RDT_CORE_SIZE,
+        calculate_fov_degrees, parse_pri_mask_count, RdtCameraSession, RdtFile, RoomIdentity,
+        RDT_CORE_SIZE, RID_CAMERA_SIZE,
     };
 
     fn minimal_rdt(camera_count: u8, rid_offset: u32) -> Vec<u8> {
@@ -438,6 +517,26 @@ mod tests {
         };
         assert_eq!(later_room.background_image_index(4), Ok(564));
         assert!(identity.background_image_index(16).is_err());
+    }
+
+    #[test]
+    fn leaves_only_roomcut_cameras_with_unambiguous_slots_selectable() {
+        let mut bytes = minimal_rdt(17, RDT_CORE_SIZE as u32);
+        bytes.resize(RDT_CORE_SIZE + 17 * RID_CAMERA_SIZE, 0);
+        for camera in 0..17 {
+            let mask_offset = RDT_CORE_SIZE + camera * RID_CAMERA_SIZE + 28;
+            bytes[mask_offset..mask_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        }
+        let rdt = RdtFile::parse(Path::new("ROOM1000.RDT"), &bytes)
+            .expect("well-formed RDT with 17 camera records");
+        assert_eq!(rdt.cameras.len(), 17);
+        assert_eq!(rdt.mapped_camera_count(), 16);
+        assert_eq!(rdt.background_image_index(15), Ok(15));
+        assert!(rdt.background_image_index(16).is_err());
+        let error = RdtCameraSession::open(rdt, Path::new("missing-roomcut.bin"), 16)
+            .err()
+            .expect("camera without a unique slot must be rejected before opening the BIN");
+        assert!(error.contains("camera index 16 cannot map uniquely"));
     }
 
     #[test]

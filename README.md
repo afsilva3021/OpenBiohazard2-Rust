@@ -40,6 +40,8 @@ SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt data/Pl0/Rdt/R
 SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt data/Pl0/Rdt/ROOM1000.RDT 0 data/Common/bin/roomcut.bin
 ```
 
+While this window is open, press **Left** or **Right** to move to the previous or next camera. Navigation wraps across the cameras that have an unambiguous Go `roomcut.bin` slot. The selected background is decoded and uploaded only after a key press; the program keeps one room image/texture at a time. If reading or uploading a camera fails, it logs the error and leaves the current image visible. Press **Esc** to exit.
+
 The parser reads the 100-byte RDT core header, RID camera records, and PRI mask counts. It does not compose camera masks or load other RDT sections. To validate/export a selected camera without opening SDL/OpenGL:
 
 ```bash

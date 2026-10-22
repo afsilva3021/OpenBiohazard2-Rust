@@ -73,33 +73,12 @@ fn run() -> Result<(), String> {
                 .get(3)
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("data/Common/bin/roomcut.bin"));
-            let (image_index, entry, image) = load_rdt_camera_image(&rdt, camera_index, &bin_path)?;
-            let camera = rdt.camera(camera_index)?;
-            let description = format!(
-                "{} camera {camera_index} -> {} entry {image_index} (offset {}, {} compressed bytes)",
-                rdt_path.display(),
-                bin_path.display(),
-                entry.offset,
-                entry.length
-            );
-            println!(
-                "Selected camera {camera_index}: from={:?}, to={:?}, FOV={:.6}°, masks={}",
-                camera.from,
-                camera.to,
-                camera.fov_degrees,
-                camera
-                    .mask_count
-                    .map_or_else(|| "none".to_owned(), |count| count.to_string())
-            );
-            println!("Go roomcut mapping: image entry {image_index}");
-            report_image(&description, &image);
-            app::run(app::TextureSource::Rgba {
-                width: image.width(),
-                height: image.height(),
-                pixels: image.to_rgba(),
-                description,
-            })
-            .map_err(|error| error.to_string())
+            let mut session = fileio::rdt::RdtCameraSession::open(rdt, &bin_path, camera_index)?;
+            let initial = session.load_camera(camera_index)?;
+            app::report_camera(&session, &initial)?;
+            report_image(&rdt_path.display().to_string(), &initial.image);
+            app::run(app::TextureSource::RdtCamera { session, initial })
+                .map_err(|error| error.to_string())
         }
         "--decode-rdt" if (4..=5).contains(&args.len()) => {
             let rdt_path = PathBuf::from(&args[1]);
@@ -110,15 +89,11 @@ fn run() -> Result<(), String> {
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("data/Common/bin/roomcut.bin"));
             let rdt = fileio::rdt::RdtFile::open(&rdt_path)?;
-            let (image_index, entry, image) = load_rdt_camera_image(&rdt, camera_index, &bin_path)?;
-            image.write_png(&output)?;
-            println!(
-                "Decoded {} camera {camera_index} via roomcut entry {image_index}: offset {}, {} compressed bytes",
-                rdt_path.display(),
-                entry.offset,
-                entry.length
-            );
-            report_image(&bin_path.display().to_string(), &image);
+            let mut session = fileio::rdt::RdtCameraSession::open(rdt, &bin_path, camera_index)?;
+            let selection = session.load_camera(camera_index)?;
+            app::report_camera(&session, &selection)?;
+            selection.image.write_png(&output)?;
+            report_image(&bin_path.display().to_string(), &selection.image);
             println!("Diagnostic PNG written to {}", output.display());
             Ok(())
         }
@@ -222,31 +197,6 @@ fn print_rdt(rdt: &fileio::rdt::RdtFile) {
             camera.fov_degrees
         );
     }
-}
-
-fn load_rdt_camera_image(
-    rdt: &fileio::rdt::RdtFile,
-    camera_index: usize,
-    bin_path: &std::path::Path,
-) -> Result<(usize, fileio::bin::BinEntry, fileio::adt::AdtImage), String> {
-    rdt.camera(camera_index)?;
-    let identity = rdt.identity.ok_or_else(|| {
-        format!(
-            "cannot map camera to roomcut entry: RDT filename {} does not match Go's ROOM%01d%02x%01d.RDT format",
-            rdt.path().display()
-        )
-    })?;
-    let image_index = identity.background_image_index(camera_index)?;
-    let mut archive = fileio::bin::BinArchive::open(bin_path)?;
-    let entry = archive.entry(image_index).map_err(|error| {
-        format!(
-            "RDT {} camera {camera_index} maps to roomcut entry {image_index}, but {}: {error}",
-            rdt.path().display(),
-            bin_path.display()
-        )
-    })?;
-    let image = archive.decode_adt_entry(image_index)?;
-    Ok((image_index, entry, image))
 }
 
 fn usage_error() -> String {

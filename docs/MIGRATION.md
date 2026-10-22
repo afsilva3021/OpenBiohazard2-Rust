@@ -31,10 +31,10 @@ The principal modules are:
 | Go path | Responsibility | Planned Rust location | Migration status |
 | --- | --- | --- | --- |
 | `main.go` | Startup, game initialization, state dispatch | `src/main.rs`, `src/app.rs` | Bootstrap only |
-| `client/windowhandler.go` | GLFW window, context, swap, resize, frame timing | `src/app.rs` plus a future `platform` module | SDL2 window and event loop implemented |
-| `client/inputhandler.go` | Key and mouse action mapping | Future `src/input.rs` | Not started |
-| `render/rendermain.go` | Renderer setup and frame orchestration | `src/graphics/renderer.rs` | Blue clear and textured test rectangle only |
-| `render/opengl_renderer.go` | VAO/VBO/attributes, textures, draw calls | Future graphics modules | GLES2 VBO, UVs, PNG/ADT texture upload and two-triangle draw only |
+| `client/windowhandler.go` | GLFW window, context, swap, resize, frame timing | `src/app.rs` plus a future `platform` module | SDL2 window, event loop, and Left/Right RDT camera navigation implemented |
+| `client/inputhandler.go` | Key and mouse action mapping | `src/app.rs` for this stage; future `src/input.rs` | Escape/Quit and non-repeating arrow-key camera changes |
+| `render/rendermain.go` | Renderer setup and frame orchestration | `src/graphics/renderer.rs` | Blue clear, textured rectangle, aspect-preserving resize, and transactional texture replacement |
+| `render/opengl_renderer.go` | VAO/VBO/attributes, textures, draw calls | Future graphics modules | GLES2 VBO, UVs, PNG/ADT texture upload, two-triangle draw, and one active room texture |
 | `shader/shader.go` | Shader file loading, compilation, linking | `src/graphics/renderer.rs` for this probe; future `src/graphics/shader.rs` | In-memory GLSL ES 1.00 texture shaders with compile/link error logs |
 | `shader/shadersystem.go` | Program lifetime and uniform cache | Future `src/graphics/shader.rs` | Not started |
 | `shader/openbiohazard2.vert` | Desktop GLSL vertex shader | Future GLES shader asset | Requires adaptation |
@@ -54,7 +54,7 @@ The Go dependency configuration is in `go.mod`: Go 1.23, `go-gl/gl`, `go-gl/glfw
 
 The existing `client/windowhandler.go` requests OpenGL 3.3 core, forward-compatible, through GLFW. It swaps buffers before polling events and closes when the mapped Escape action is active. The Rust bootstrap changes the window size to the stage requirement of `640×480`, requests `GLProfile::GLES` version `2.0` through SDL2, attempts SDL VSync with a non-fatal warning if unavailable, polls SDL events, handles `Esc` and `Quit`, and updates the viewport from the drawable framebuffer dimensions after resize.
 
-The existing `render/rendermain.go` loads desktop OpenGL functions, sets a black clear color, enables depth testing, multisampling, and alpha blending, then initializes shaders and scene systems. The Rust renderer retains its blue clear and can select the original PNG probe or an ADT image. Both sources upload RGBA with `glTexImage2D` and draw a UV-mapped rectangle as six VBO vertices. The GLSL ES 1.00 fragment shader samples it with `texture2D`; filtering and clamp-to-edge parameters support non-power-of-two dimensions in GLES 2.0. The viewport-fit scale preserves the image aspect ratio. ADT data is decoded once before the event loop and the RGBA buffer is consumed during texture creation. The GPU texture and VBO are deleted when their owners are dropped. No VAO or desktop-only API is used.
+The existing `render/rendermain.go` loads desktop OpenGL functions, sets a black clear color, enables depth testing, multisampling, and alpha blending, then initializes shaders and scene systems. The Rust renderer retains its blue clear and can select the original PNG probe or an ADT image. Both sources upload RGBA with `glTexImage2D` and draw a UV-mapped rectangle as six VBO vertices. The GLSL ES 1.00 fragment shader samples it with `texture2D`; filtering and clamp-to-edge parameters support non-power-of-two dimensions in GLES 2.0. The viewport-fit scale preserves the image aspect ratio. For RDT mode, only the initial camera is decoded before entering the event loop; subsequent backgrounds decode only on a Left/Right key press. A replacement GPU texture is fully created before the renderer swaps out the previous one, so decode or upload errors keep the current camera visible. The GPU texture and VBO are deleted when their owners are dropped. No VAO or desktop-only API is used.
 
 The current Go shaders are not portable to the requested GLES 2.0 profile without changes. They declare `#version 410`, use desktop shader interfaces such as `layout` and `out`, and rely on operations such as matrix inversion. The Rust texture probe uses GLSL ES 1.00 syntax (`attribute`, `varying`, `texture2D`, `gl_FragColor`) and a fragment precision declaration. It logs compile and link info logs on failure. The Go shaders remain unported.
 
@@ -132,15 +132,15 @@ That diagnostic helper has a bug: it parses each 5-bit channel with `strconv.Par
 | `Cargo.toml` | Rust package metadata, SDL2/OpenGL function loading, and pure-Rust PNG decoding |
 | `Cargo.lock` | Locked dependency versions generated by Cargo |
 | `src/main.rs` | Process entry point, ADT/PNG modes, RDT camera listing/selection, and top-level error reporting |
-| `src/app.rs` | SDL2 initialization, GLES 2.0 context, event loop, GL context details, and acceleration assessment |
+| `src/app.rs` | SDL2 initialization, GLES 2.0 context, event loop, camera selection, GL context details, and acceleration assessment |
 | `src/graphics/mod.rs` | Graphics module boundary |
-| `src/graphics/renderer.rs` | GLSL ES 1.00 compile/link, VBO/UV setup, aspect-preserving viewport fit, blue clear, and rectangle draw |
+| `src/graphics/renderer.rs` | GLSL ES 1.00 compile/link, VBO/UV setup, aspect-preserving viewport fit, blue clear, rectangle draw, and safe texture replacement |
 | `src/graphics/texture.rs` | PNG decode and shared RGBA texture upload, GLES2-compatible formats, texture lifetime |
 | `src/fileio/mod.rs` | ADT/BIN/RDT module boundary |
 | `src/fileio/bitreader.rs` | Checked MSB-first bit reads and Go-style prefix number |
 | `src/fileio/adt.rs` | ADT decompression, 320×240 reconstruction, runtime RGBA conversion, diagnostic PNG output |
 | `src/fileio/bin.rs` | Checked BIN offset table and bounded ADT-entry stream |
-| `src/fileio/rdt.rs` | Bounded RDT core/RID/PRI metadata reader, filename identity, Go camera-to-BIN index mapping |
+| `src/fileio/rdt.rs` | Bounded RDT core/RID/PRI metadata reader, filename identity, Go camera-to-BIN mapping, and lazy selected-camera loading |
 | `assets/test_texture.png` | Non-proprietary 320×180 RGBA test image with transparency and orientation colors |
 | `README.md` | Build/run instructions, Pi notes, and stage boundary |
 | `docs/MIGRATION.md` | Go analysis, module mapping, portability findings, and validation report |
@@ -156,17 +156,19 @@ The Rust validation was executed in a disposable `rust:latest` container with bu
 | `cargo fmt --check` | Passed |
 | `cargo check` | Passed |
 | `cargo clippy -- -D warnings` | Passed, no warnings |
-| `cargo test` | Passed: 17 unit tests, including truncated RDT/RID/PRI data, invalid offsets and camera indices, filename parsing, and Go mapping |
+| `cargo test` | Passed: 20 unit tests, including truncated RDT/RID/PRI data, invalid offsets and camera indices, filename parsing, Go mapping, and camera cycling |
 | `cargo build --release` | Passed |
 | Rust decode: `roomcut.bin` entry 0 | Passed: 320×240; 229,920 raw bytes; diagnostic PNG created |
 | Rust decode: `Title_bg.adt` | Passed: 320×240; 163,840 raw bytes; diagnostic PNG created |
 | Go/Rust raw payload and reconstructed 16-bit comparison | Passed for both resources: exact byte equality |
 | Go/Rust diagnostic PNG pixel comparison | Passed for both resources after mirroring Go `ConvertToPNG` channel clamping |
 | RDT camera comparison with Go `LoadRDTFile` | Passed for all 9 cameras: position, FOV `59.963276°`, PRI offsets, and mask counts match |
-| Rust `--rdt data/Pl0/Rdt/ROOM1000.RDT` | Passed: lists all 9 cameras and maps them to entries 0–8 |
-| Rust `--decode-rdt` for cameras 0–8 | Passed: all nine mapped BIN entries decode to 320×240 PNGs |
-| SDL/OpenGL ES runtime for the new `--rdt` path on Raspberry Pi | Not run in this environment; the Pi hardware is unavailable here |
-| GL driver/context strings | Previously confirmed by the user on Pi for the existing ADT render path: OpenGL ES 2.0 and Broadcom VC4; this new camera-selection invocation still needs a Pi run |
+| Rust `--rdt data/Pl0/Rdt/ROOM1000.RDT` | Passed: lists all 9 cameras and maps them to entries 0–8; arrows navigate that set with wraparound |
+| Rust `--decode-rdt` for ROOM1000 cameras 0–8 | Passed in the SDL2 runtime container: all nine mapped BIN entries decode to 320×240 PNGs; entries 0–6 yield 229,920 raw bytes and entries 7–8 yield 163,840 bytes. The prior Go/Rust byte comparison specifically covered entry 0. |
+| Variable-count RDT inspection | Passed: `ROOM1010.RDT` has 13 cameras (entries 16–28); `ROOM30C0.RDT` has 17 records, with the 16 uniquely mapped cameras at entries 1216–1231; its record 16 is intentionally not selectable because it aliases the next room under Go's 16-slot stride |
+| Rust `--decode-rdt data/Pl0/Rdt/ROOM30C0.RDT 0` | Passed: camera 0 maps to entry 1216 and decodes to 320×240 |
+| SDL/OpenGL ES runtime for camera switching on Raspberry Pi | Not run in this environment; this turn had no Pi/KMSDRM display attached |
+| GL driver/context strings | Previously confirmed by the user on Pi for the existing ADT render path: OpenGL ES 2.0 and Broadcom VC4; arrow-key switching still needs an end-to-end Pi run |
 
 The CLI and pixel data were validated without a graphics context. The existing renderer was already confirmed by the user on the Pi using a direct `roomcut.bin` entry. The new `--rdt` camera-selection route needs the Pi run below to confirm its end-to-end SDL/GLES presentation.
 
@@ -174,6 +176,18 @@ The CLI and pixel data were validated without a graphics context. The existing r
 
 The reported `sdl2-sys` UTF-8 failure was not reproduced in the Rust validation container. The project uses `sdl2-sys 0.38.0`; its Linux build script converts the output of `cc -dumpversion` with `std::str::from_utf8(...).unwrap()` (in the Cargo registry copy of `sdl2-sys/build.rs`). Non-UTF-8 compiler output can therefore panic inside that dependency before project tests run. This is separate from the RDT parser and is not patched in the repository. In the current container, the compiler version output is ordinary ASCII and the tests proceed. If it recurs on the Pi, capture `LC_ALL=C cc -dumpversion` and `cargo test -vv` output; the exact compiler wrapper/locale then determines whether upgrading or patching the dependency is appropriate. The WSL host used here also lacks `cc` and `pkg-config`, so its direct Cargo build cannot reach this dependency code.
 
-## Current stage boundary
+## Etapa 6 — runtime camera switching
 
-The minimal RDT camera metadata and confirmed background-entry mapping are implemented. Camera image decoding can be exercised headlessly with `--decode-rdt`; rendering a selected camera still needs the previously confirmed Raspberry Pi KMSDRM/GLES2 run. PRI rectangle interpretation and TIM mask composition, other RDT sections, models, characters, animation, collision, and room scripts remain out of scope until this RDT stage is validated on the Pi.
+The SDL event loop now handles non-repeating Left/Right key-down events only in RDT camera mode. Navigation wraps around the cameras that have a unique slot under Go's 16-entry-per-room mapping; Escape and window-close behavior remain unchanged. The initial camera still comes from `--rdt RDT CAMERA [ROOMCUT.BIN]` and is validated against both the RDT camera list and the roomcut formula before the BIN is opened. For each key press, the session decodes only the target ADT. It does not pre-decode or cache the room's other backgrounds, and it does no decode work in the frame loop.
+
+Texture replacement is transactional: RGBA conversion and GL allocation/upload complete into a temporary texture before the renderer replaces its active texture. A decode, dimension, or GL upload error is reported to stderr and leaves the previous texture and current-camera index intact. During the brief replacement operation the old and candidate GPU textures coexist; each room background is only 320×240, and no per-camera texture cache is retained. Camera changes print the selected camera/count, derived BIN entry and byte range, RDT coordinates, FOV, and mask count.
+
+The real `data/Pl0/Rdt/ROOM1000.RDT` has 9 cameras. All nine corresponding `roomcut.bin` entries (0–8) were decoded successfully as 320×240 images using the current Rust session path. `ROOM1010.RDT` has 13 cameras, confirming the selection count is not fixed at 9. The inspected `ROOM30C0.RDT` has 17 camera records. Its indices 0–15 map to entries 1216–1231; camera 16 is displayed as `roomcut entry=unavailable` and excluded from arrow navigation because it collides with the next room's first slot under the confirmed Go formula. Across the local `data/Pl0/Rdt/` folder, 250 RDT files were found, with camera counts from 2 to 17; no fixed count is assumed.
+
+The pure index-cycle tests cover forward wrap from camera 8 to 0, reverse wrap from 0 to 8, single-camera rooms, zero counts, and invalid current indices. The runtime Pi test remains necessary to verify that SDL delivers the arrow keys in KMSDRM and that each uploaded image appears on the VC4 display. Use:
+
+```bash
+SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt data/Pl0/Rdt/ROOM1000.RDT 0
+```
+
+Press Left/Right and observe the terminal's camera/entry logs; press Escape to exit. The previously confirmed GLES2 renderer and VC4 context are reused. No Go source, game data, or generated diagnostic PNG is modified or tracked.

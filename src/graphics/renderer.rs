@@ -33,6 +33,8 @@ pub struct Renderer {
     sampler_uniform: gl::types::GLint,
     texture: Texture,
     image_aspect: f32,
+    viewport_width: u32,
+    viewport_height: u32,
     scale: [f32; 2],
 }
 
@@ -135,6 +137,8 @@ impl Renderer {
             sampler_uniform,
             texture,
             image_aspect,
+            viewport_width: 1,
+            viewport_height: 1,
             scale: [1.0, 1.0],
         };
         renderer.resize(viewport_width, viewport_height);
@@ -144,6 +148,8 @@ impl Renderer {
     pub fn resize(&mut self, width: u32, height: u32) {
         let width = width.max(1);
         let height = height.max(1);
+        self.viewport_width = width;
+        self.viewport_height = height;
         let viewport_aspect = width as f32 / height as f32;
         self.scale = if self.image_aspect >= viewport_aspect {
             [0.9, 0.9 * viewport_aspect / self.image_aspect]
@@ -152,6 +158,23 @@ impl Renderer {
         };
 
         unsafe { gl::Viewport(0, 0, width as i32, height as i32) };
+    }
+
+    pub fn replace_texture(
+        &mut self,
+        image_width: u32,
+        image_height: u32,
+        pixels: Vec<u8>,
+        source: &str,
+    ) -> Result<(), String> {
+        // Upload first. If decoding or the GL upload failed, `self.texture` remains
+        // alive and the event loop can keep drawing the current camera.
+        let next_texture = Texture::from_rgba(image_width, image_height, pixels, source)?;
+        let next_aspect = next_texture.width() as f32 / next_texture.height() as f32;
+        self.texture = next_texture;
+        self.image_aspect = next_aspect;
+        self.resize(self.viewport_width, self.viewport_height);
+        Ok(())
     }
 
     pub fn render(&self) {
