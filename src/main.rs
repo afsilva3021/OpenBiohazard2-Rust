@@ -77,8 +77,53 @@ fn run() -> Result<(), String> {
             let initial = session.load_camera(camera_index)?;
             app::report_camera(&session, &initial)?;
             report_image(&rdt_path.display().to_string(), &initial.image);
-            app::run(app::TextureSource::RdtCamera { session, initial })
-                .map_err(|error| error.to_string())
+            app::run(app::TextureSource::RdtCamera(Box::new(
+                app::RdtCameraSource {
+                    session,
+                    initial,
+                    model: None,
+                },
+            )))
+            .map_err(|error| error.to_string())
+        }
+        "--rdt-model" if (4..=5).contains(&args.len()) => {
+            let rdt_path = PathBuf::from(&args[1]);
+            let camera_index = parse_index(&args[2])?;
+            let pld_path = PathBuf::from(&args[3]);
+            let bin_path = args
+                .get(4)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("data/Common/bin/roomcut.bin"));
+            let rdt = fileio::rdt::RdtFile::open(&rdt_path)?;
+            let (position, yaw_degrees) = go_diagnostic_player_transform(&rdt)?;
+            let model = fileio::pld::load_static_pld(&pld_path)?;
+            report_model(&pld_path, &model);
+            println!(
+                "PLD placement: Go debug start position {position:?}, yaw={yaw_degrees}°; neutral skeleton pose, solid diagnostic color (not gameplay placement)"
+            );
+            print_rdt(&rdt);
+            let mut session = fileio::rdt::RdtCameraSession::open(rdt, &bin_path, camera_index)?;
+            let initial = session.load_camera(camera_index)?;
+            app::report_camera(&session, &initial)?;
+            report_image(&bin_path.display().to_string(), &initial.image);
+            app::run(app::TextureSource::RdtCamera(Box::new(
+                app::RdtCameraSource {
+                    session,
+                    initial,
+                    model: Some(graphics::model_renderer::ModelOverlay {
+                        model,
+                        position,
+                        yaw_degrees,
+                    }),
+                },
+            )))
+            .map_err(|error| error.to_string())
+        }
+        "--inspect-pld" if args.len() == 2 => {
+            let path = PathBuf::from(&args[1]);
+            let model = fileio::pld::load_static_pld(&path)?;
+            report_model(&path, &model);
+            Ok(())
         }
         "--decode-rdt" if (4..=5).contains(&args.len()) => {
             let rdt_path = PathBuf::from(&args[1]);
@@ -151,6 +196,39 @@ fn report_image(source: &str, image: &fileio::adt::AdtImage) {
     );
 }
 
+fn report_model(path: &std::path::Path, model: &fileio::pld::StaticPldModel) {
+    println!(
+        "Static PLD {}: {} components, {} stored vertices, {} triangles + {} quads = {} triangles, {} expanded draw vertices; neutral-pose bounds min={:?} max={:?}",
+        path.display(),
+        model.component_count,
+        model.stored_vertex_count,
+        model.triangle_count,
+        model.quad_count,
+        model.triangulated_face_count(),
+        model.draw_vertex_count(),
+        model.bounds.min,
+        model.bounds.max
+    );
+}
+
+fn go_diagnostic_player_transform(rdt: &fileio::rdt::RdtFile) -> Result<([f32; 3], f32), String> {
+    let identity = rdt.identity.ok_or_else(|| {
+        format!(
+            "no model diagnostic placement is defined for RDT filename {}",
+            rdt.path().display()
+        )
+    })?;
+    if identity.stage != 1 || identity.room != 0 || identity.player != 0 {
+        return Err(format!(
+            "no verified Go debug player transform is available for stage {}, room 0x{:02x}, player {}; only ROOM1000 has an inspected diagnostic location",
+            identity.stage, identity.room, identity.player
+        ));
+    }
+    // Migrated from Go game/debug.go and main.go; this is a diagnostic start
+    // position in the source engine, not a gameplay spawn or inferred constant.
+    Ok(([18_800.0, 0.0, -3_160.0], 180.0))
+}
+
 fn print_rdt(rdt: &fileio::rdt::RdtFile) {
     let header = rdt.header;
     println!(
@@ -211,11 +289,14 @@ fn print_usage() {
          cargo run --release -- --adt INPUT.ADT\n\
          cargo run --release -- --bin INPUT.BIN ENTRY_INDEX\n\
          cargo run --release -- --rdt INPUT.RDT [CAMERA_INDEX [ROOMCUT.BIN]]\n\
+         cargo run --release -- --rdt-model INPUT.RDT CAMERA_INDEX MODEL.PLD [ROOMCUT.BIN]\n\
+         cargo run --release -- --inspect-pld MODEL.PLD\n\
          cargo run --release -- --decode-rdt INPUT.RDT CAMERA_INDEX OUTPUT.PNG [ROOMCUT.BIN]\n\
          cargo run --release -- --decode-adt INPUT.ADT OUTPUT.PNG\n\
          cargo run --release -- --decode-bin INPUT.BIN ENTRY_INDEX OUTPUT.PNG\n\n\
          With no arguments, the SDL2 window uses assets/test_texture.png.\n\
          --rdt without a camera lists metadata; with a camera it renders the Go-mapped roomcut image.\n\
+         --rdt-model overlays a static, untextured PLD model using the selected RDT camera.\n\
          Diagnostic PNG output can be placed under target/diagnostics/ to keep it ignored by Git."
     );
 }

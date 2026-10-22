@@ -42,6 +42,22 @@ SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt data/Pl0/Rdt/R
 
 While this window is open, press **Left** or **Right** to move to the previous or next camera. Navigation wraps across the cameras that have an unambiguous Go `roomcut.bin` slot. The selected background is decoded and uploaded only after a key press; the program keeps one room image/texture at a time. If reading or uploading a camera fails, it logs the error and leaves the current image visible. Press **Esc** to exit.
 
+## Inspect and render a static PLD model
+
+Inspect the verified player model before opening a graphics context:
+
+```bash
+./target/release/openbiohazard2-rust --inspect-pld data/Pl0/PLD/PL00.PLD
+```
+
+Render that model over a selected room camera:
+
+```bash
+SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt-model data/Pl0/Rdt/ROOM1000.RDT 0 data/Pl0/PLD/PL00.PLD
+```
+
+The current static diagnostic uses the Go engine's debug starting transform for `ROOM1000.RDT` (stage 1, room 0, player 0), applies the neutral EMR skeleton pose, and draws the untextured model in magenta with an OpenGL ES 2.0 depth buffer. Left/Right still switch room cameras; the 3D camera matrices are updated with each selection. This is a geometry and projection check, not a gameplay spawn. Other RDT identities are rejected until their placement is verified. PLD textures, animation, and PRI mask composition are not implemented, so the model can appear in front of scenery that should occlude it.
+
 The parser reads the 100-byte RDT core header, RID camera records, and PRI mask counts. It does not compose camera masks or load other RDT sections. To validate/export a selected camera without opening SDL/OpenGL:
 
 ```bash
@@ -71,4 +87,4 @@ For another explicit source, use `--adt INPUT.ADT`, `--bin INPUT.BIN ENTRY_INDEX
 
 The verified local layout includes `data/Common/bin/roomcut.bin` and standalone images under `data/Common/Data/`. The names are case-sensitive: the inspected install has `Data` and `Rdt`; do not rename them to `DATP` or `RDP`. `data/` and `target/` are ignored by Git. No game files or extracted PNGs are part of the repository.
 
-ADT backgrounds, the minimal RDT/RID camera metadata needed to identify room backgrounds, and the confirmed RDT-to-BIN index mapping are in scope. TIM mask composition, other RDT sections, models, characters, room scripts, collision, and gameplay are not implemented. See [docs/MIGRATION.md](docs/MIGRATION.md) for the Go/Rust mapping, camera data, validation results, and known limitations.
+ADT backgrounds, the minimal RDT/RID camera metadata needed to identify room backgrounds, the confirmed RDT-to-BIN index mapping, and untextured static PLD geometry are in scope. TIM mask composition, PLD textures and animation, other RDT sections, room scripts, collision, and gameplay are not implemented. See [docs/MIGRATION.md](docs/MIGRATION.md) for the Go/Rust mapping, camera/model data, validation results, and known limitations.

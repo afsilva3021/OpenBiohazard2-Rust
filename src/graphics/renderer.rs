@@ -160,6 +160,14 @@ impl Renderer {
         unsafe { gl::Viewport(0, 0, width as i32, height as i32) };
     }
 
+    pub fn fit_scale(&self) -> [f32; 2] {
+        self.scale
+    }
+
+    pub fn image_aspect(&self) -> f32 {
+        self.image_aspect
+    }
+
     pub fn replace_texture(
         &mut self,
         image_width: u32,
@@ -188,6 +196,27 @@ impl Renderer {
             gl::ActiveTexture(gl::TEXTURE0);
             gl::BindTexture(gl::TEXTURE_2D, self.texture.id());
             gl::BindBuffer(gl::ARRAY_BUFFER, self.vertex_buffer);
+            // The optional 3D overlay uses the same GLES2 attribute state and
+            // replaces attribute 0's pointer. Restore the 2D VBO layout each
+            // frame so the background remains intact after model rendering.
+            gl::EnableVertexAttribArray(self.position_attribute);
+            gl::VertexAttribPointer(
+                self.position_attribute,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                (4 * mem::size_of::<f32>()) as gl::types::GLsizei,
+                ptr::null(),
+            );
+            gl::EnableVertexAttribArray(self.uv_attribute);
+            gl::VertexAttribPointer(
+                self.uv_attribute,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                (4 * mem::size_of::<f32>()) as gl::types::GLsizei,
+                (2 * mem::size_of::<f32>()) as *const _,
+            );
             gl::DrawArrays(gl::TRIANGLES, 0, 6);
         }
     }

@@ -7,6 +7,7 @@ use sdl2::{
 };
 
 use crate::fileio::rdt::{RdtCameraImage, RdtCameraSession};
+use crate::graphics::model_renderer::{ModelOverlay, ModelRenderer};
 use crate::graphics::renderer::Renderer;
 
 const WINDOW_WIDTH: u32 = 640;
@@ -22,10 +23,13 @@ pub enum TextureSource {
         pixels: Vec<u8>,
         description: String,
     },
-    RdtCamera {
-        session: RdtCameraSession,
-        initial: RdtCameraImage,
-    },
+    RdtCamera(Box<RdtCameraSource>),
+}
+
+pub struct RdtCameraSource {
+    pub session: RdtCameraSession,
+    pub initial: RdtCameraImage,
+    pub model: Option<ModelOverlay>,
 }
 
 pub fn run(source: TextureSource) -> AppResult<()> {
@@ -57,6 +61,7 @@ pub fn run(source: TextureSource) -> AppResult<()> {
 
     let (drawable_width, drawable_height) = window.drawable_size();
     let mut active_camera = None;
+    let mut model_overlay = None;
     let mut renderer = match source {
         TextureSource::Png(path) => Renderer::new(drawable_width, drawable_height, path)
             .map_err(|error| sdl_error("load the PNG texture", error))?,
@@ -74,7 +79,12 @@ pub fn run(source: TextureSource) -> AppResult<()> {
             &description,
         )
         .map_err(|error| sdl_error("load the ADT texture", error))?,
-        TextureSource::RdtCamera { session, initial } => {
+        TextureSource::RdtCamera(source) => {
+            let RdtCameraSource {
+                session,
+                initial,
+                model,
+            } = *source;
             let camera_index = initial.camera_index;
             let description = format!(
                 "{} camera {camera_index} -> {} entry {}",
@@ -92,8 +102,33 @@ pub fn run(source: TextureSource) -> AppResult<()> {
             )
             .map_err(|error| sdl_error("load the initial RDT camera texture", error))?;
             active_camera = Some((session, camera_index));
+            model_overlay = model;
             renderer
         }
+    };
+    let mut model_renderer = if let Some(overlay) = model_overlay {
+        let Some((session, camera_index)) = active_camera.as_ref() else {
+            return Err(sdl_error(
+                "initialize PLD model",
+                "model overlay requires an RDT camera",
+            )
+            .into());
+        };
+        let camera = session
+            .rdt()
+            .camera(*camera_index)
+            .map_err(|error| sdl_error("read the initial RDT camera for the model", error))?;
+        let model = ModelRenderer::new(
+            overlay,
+            camera,
+            renderer.image_aspect(),
+            renderer.fit_scale(),
+            video.gl_attr().depth_size(),
+        )
+        .map_err(|error| sdl_error("initialize the PLD model renderer", error))?;
+        Some(model)
+    } else {
+        None
     };
     let mut events = sdl
         .event_pump()
@@ -114,7 +149,12 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                     ..
                 } => {
                     if let Some(active_camera) = active_camera.as_mut() {
-                        switch_camera(active_camera, &mut renderer, CameraDirection::Previous);
+                        switch_camera(
+                            active_camera,
+                            &mut renderer,
+                            model_renderer.as_mut(),
+                            CameraDirection::Previous,
+                        );
                     }
                 }
                 Event::KeyDown {
@@ -123,7 +163,12 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                     ..
                 } => {
                     if let Some(active_camera) = active_camera.as_mut() {
-                        switch_camera(active_camera, &mut renderer, CameraDirection::Next);
+                        switch_camera(
+                            active_camera,
+                            &mut renderer,
+                            model_renderer.as_mut(),
+                            CameraDirection::Next,
+                        );
                     }
                 }
                 Event::Window {
@@ -132,15 +177,32 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                 } => {
                     let (drawable_width, drawable_height) = window.drawable_size();
                     renderer.resize(drawable_width, drawable_height);
+                    if let (Some(model), Some((session, camera_index))) =
+                        (model_renderer.as_mut(), active_camera.as_ref())
+                    {
+                        if let Ok(camera) = session.rdt().camera(*camera_index) {
+                            if let Err(error) = model.update_camera(
+                                camera,
+                                renderer.image_aspect(),
+                                renderer.fit_scale(),
+                            ) {
+                                eprintln!("Could not update PLD view after resize: {error}");
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
         }
 
         renderer.render();
+        if let Some(model) = model_renderer.as_ref() {
+            model.render();
+        }
         window.gl_swap_window();
     }
 
+    drop(model_renderer);
     drop(renderer);
     drop(gl_context);
     Ok(())
@@ -152,6 +214,7 @@ fn configure_opengles(video: &sdl2::VideoSubsystem) {
     gl_attributes.set_context_profile(GLProfile::GLES);
     gl_attributes.set_context_version(2, 0);
     gl_attributes.set_double_buffer(true);
+    gl_attributes.set_depth_size(16);
 }
 
 fn configure_vsync(video: &sdl2::VideoSubsystem) {
@@ -269,6 +332,7 @@ fn adjacent_camera_index(
 fn switch_camera(
     active_camera: &mut (RdtCameraSession, usize),
     renderer: &mut Renderer,
+    mut model_renderer: Option<&mut ModelRenderer>,
     direction: CameraDirection,
 ) {
     let (session, current_camera) = active_camera;
@@ -284,7 +348,17 @@ fn switch_camera(
 
     let result = (|| {
         let selection = session.load_camera(next_camera)?;
-        let camera = session.rdt().camera(next_camera)?;
+        let camera = *session.rdt().camera(next_camera)?;
+        let next_mvp = model_renderer
+            .as_deref()
+            .map(|model| {
+                model.prepare_camera(
+                    &camera,
+                    selection.image.width() as f32 / selection.image.height() as f32,
+                    renderer.fit_scale(),
+                )
+            })
+            .transpose()?;
         let description = format!(
             "{} camera {next_camera} -> {} entry {}",
             session.rdt().path().display(),
@@ -297,7 +371,10 @@ fn switch_camera(
             selection.image.to_rgba(),
             &description,
         )?;
-        Ok::<_, String>((selection, *camera))
+        if let (Some(model), Some(mvp)) = (model_renderer.take(), next_mvp) {
+            model.set_mvp(mvp);
+        }
+        Ok::<_, String>((selection, camera))
     })();
 
     match result {

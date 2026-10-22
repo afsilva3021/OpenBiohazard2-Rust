@@ -191,3 +191,53 @@ SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt data/Pl0/Rdt/R
 ```
 
 Press Left/Right and observe the terminal's camera/entry logs; press Escape to exit. The previously confirmed GLES2 renderer and VC4 context are reused. No Go source, game data, or generated diagnostic PNG is modified or tracked.
+
+## Etapa 7 — static PLD geometry overlay
+
+### Go analysis and real resource
+
+The read-only Go review covered `fileio/pld.go`, `fileio/edd.go`, `fileio/emr.go`, `fileio/md1.go`, `fileio/tim.go`, `fileio/streamreader.go`, `geometry/md1geometry.go`, `geometry/triangle.go`, `geometry/quad.go`, `render/AnimatedEntity.go`, `render/animation.go`, `render/camera.go`, `render/viewsystem.go`, `render/constants.go`, `render/rendermain.go`, `game/player.go`, `game/debug.go`, `main.go`, and the GLSL files under `shader/`. The `cmd/modeldumper` utility was run against the original PLD with the Go tree mounted read-only in a disposable Go container.
+
+The user's real `data/Pl0/PLD/PL00.PLD` is 145,304 bytes. Its directory has four sections in this order: EDD at byte 8, EMR at 1,436, MD1 at 25,052, and TIM at 45,416; the directory itself begins at byte 145,288. The Go reader identifies 15 EMR bones, 15 MD1 mesh components, 293 animation frames, 10 EDD pose entries, and a 384×256 TIM with three palettes. This verifies the PL00 resource structure for this installed PC edition only; it does not establish compatibility with every regional or release variant.
+
+Go reports 187 triangles and 267 quads across the 15 MD1 components. Following the Go neutral-pose hierarchy and the Go quad split yields 721 triangles and 2,163 expanded triangle-list vertices. A separate comparison over the Go dumper's indexed geometry and the Rust loader produced the same neutral-pose bounds: min `[-267, -3044, -559]`, max `[290, -7, 559]`. This checks indexed vertex selection, neutral hierarchy translations, and triangle/quad expansion for this file. It does not compare animated poses or texture sampling.
+
+One PL00 MD1 header declares a section length of 13,848 bytes even though its referenced object regions continue through the MD1-to-TIM boundary. Rust follows the PLD directory and bounds MD1 reads by the next section offset, validates each referenced range against that boundary, and does not trust the smaller internal length as the section extent. This behavior is based on the observed resource and Go loader layout; more PLD variants still need inspection.
+
+### Rust implementation and rendering
+
+| Go implementation | Rust implementation | Migrated behavior |
+| --- | --- | --- |
+| `fileio.PLDFile` / PLD section directory | `fileio::pld::parse_static_pld`, `load_static_pld` | Bounded directory and section parsing; input limited to 32 MiB |
+| `LoadEMRFile`, `EMROutput`, `ArmatureChildren`, `RelativePositionData` | `parse_neutral_skeleton`, `visit_skeleton` | Validated hierarchy, cycle/parent checks, cumulative neutral translations |
+| `LoadMD1File`, component arrays, triangle/quad index records | `parse_md1` and bounded record helpers | Validated mesh tables and indices; expands indexed triangles and Go's quad split into one static position buffer |
+| `render.buildComponentTransforms` with `Animation.CurPose == -1` | Neutral offsets in `StaticPldModel` | Static neutral pose only; EDD frames and rotations are not loaded for rendering |
+| `render.camera` and `render.viewsystem` | `graphics::model_renderer::camera_mvp` | RDT camera From/To, Go's up vector, FOV, near/far values, and the aspect fit used by the existing background renderer |
+| Existing renderer's camera background draw | `ModelRenderer` pass after the 2D draw | GLES2 / GLSL ES 1.00 solid-color shader, static VBO, depth testing, and a 16-bit SDL depth-buffer request |
+
+The loader does not parse or upload PLD TIM palettes/textures, normals, material flags, EDD pose sequences, or animation rotations. The overlay uses a solid diagnostic color. It uses the source Go debug transform found in `game/debug.go` and `main.go`: position `(18800, 0, -3160)`, yaw `180°`. That known location is accepted only for `ROOM1000.RDT`; other room identities are rejected rather than receiving an invented transform. Camera switching reuses the model VBO and updates its matrix; it does not re-decode model data or rebuild the VBO per frame. The 2D renderer resets its vertex attribute binding before drawing the next background, since GLES2 attribute state is shared between the background and model passes.
+
+Run the parser without SDL/OpenGL, then view the static overlay on the Pi:
+
+```bash
+./target/release/openbiohazard2-rust --inspect-pld data/Pl0/PLD/PL00.PLD
+SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt-model data/Pl0/Rdt/ROOM1000.RDT 0 data/Pl0/PLD/PL00.PLD
+```
+
+In the window, Left/Right select cameras and Escape exits. Startup logs report component/face/vertex counts, neutral bounds, the diagnostic placement, selected RDT camera and BIN entry, and the configured depth-buffer size. PRI/TIM masks are still needed for correct scenery occlusion, so the model can draw over foreground scenery.
+
+### Etapa 7 validation and limitations
+
+| Check | Result |
+| --- | --- |
+| Go `cmd/modeldumper` on `data/Pl0/PLD/PL00.PLD` | Passed: 15 components; 187 triangles, 267 quads; 15 bones; 293 animation frames; TIM 384×256, 3 palettes |
+| Go indexed geometry vs Rust neutral expanded mesh | Passed for counts and bounds: 721 triangles, 2,163 expanded vertices, min `[-267,-3044,-559]`, max `[290,-7,559]` |
+| `cargo fmt --check` | Passed |
+| `cargo check` | Passed |
+| `cargo clippy -- -D warnings` | Passed with no warnings |
+| `cargo test` | Passed: 27 unit tests, including valid synthetic PLD geometry and malformed/truncated section, offset, index, and hierarchy cases |
+| `cargo build --release` | Passed |
+| Rust `--inspect-pld data/Pl0/PLD/PL00.PLD` | Passed; reports 15 components, 721 triangulated faces, and the neutral bounds above |
+| SDL/OpenGL ES overlay on Raspberry Pi Zero 2 W | Not run here; no Pi/KMSDRM display is attached. The previously user-confirmed VC4/GLES2 base renderer is reused, but the new depth-tested model pass still needs visual verification on the Pi. |
+
+CPU parsing and the Go geometry comparison show that PL00's static mesh is structurally valid and that its neutral hierarchy translation matches the Go output. They do not prove ideal framing on every camera or hardware depth-buffer behavior. PLD variants other than the installed `PL00.PLD`, animated poses, material/texture rendering, masks, and gameplay placement remain unverified or out of scope. No game files, generated diagnostic JSON/PNGs, or Go source changes are tracked.
