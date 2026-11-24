@@ -52,10 +52,6 @@ impl Animation {
         }
     }
 
-    pub fn pose(&self) -> Option<usize> {
-        self.pose
-    }
-
     /// EMR frame to display, or `None` for the neutral pose.
     pub fn current_frame(&self) -> Option<usize> {
         self.pose.map(|_| self.frame_number)

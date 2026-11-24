@@ -1,8 +1,9 @@
 use std::{error::Error, ffi::CStr, io, path::PathBuf};
 
 use sdl2::{
+    controller::{Axis, Button, GameController},
     event::{Event, WindowEvent},
-    keyboard::Keycode,
+    keyboard::{Keycode, Scancode},
     video::{GLProfile, SwapInterval},
 };
 
@@ -13,6 +14,7 @@ use crate::graphics::mask_renderer::MaskRenderer;
 use crate::graphics::model_renderer::{ModelRenderer, Placement};
 use crate::graphics::renderer::Renderer;
 use crate::math::Mat4;
+use crate::world::{CameraSwitches, CollisionEntity, Player, PlayerInput};
 
 const WINDOW_WIDTH: u32 = 640;
 const WINDOW_HEIGHT: u32 = 480;
@@ -35,6 +37,13 @@ pub struct ModelOverlay {
     pub placement: Placement,
 }
 
+/// Room gameplay: player, SCA collision and RVD camera switches.
+pub struct Gameplay {
+    pub player: Player,
+    pub collision: Vec<CollisionEntity>,
+    pub switches: CameraSwitches,
+}
+
 /// Animated model state owned by the event loop.
 struct ModelScene {
     overlay: ModelOverlay,
@@ -43,13 +52,21 @@ struct ModelScene {
     /// Background of the active camera, kept to rebuild masks on resize.
     background: AdtImage,
     animation: Animation,
-    /// Pose shown while testing: `None` is the neutral skeleton.
+    /// Pose shown: `None` is the neutral skeleton.
     pose: Option<usize>,
     bones: Vec<Mat4>,
+    gameplay: Option<Gameplay>,
 }
 
 impl ModelScene {
     fn update(&mut self, elapsed_seconds: f64) {
+        if let Some(gameplay) = self.gameplay.as_ref() {
+            self.pose = gameplay.player.pose;
+            self.overlay.placement = Placement {
+                position: gameplay.player.position,
+                yaw_degrees: gameplay.player.rotation_degrees,
+            };
+        }
         let model = &self.overlay.model;
         self.animation
             .update(self.pose, &model.animations, elapsed_seconds);
@@ -60,17 +77,15 @@ impl ModelScene {
         bone_transforms(&model.skeleton, frame, &mut self.bones);
     }
 
-    fn cycle_pose(&mut self) {
-        let count = self.overlay.model.animations.len();
-        self.pose = match self.pose {
-            None if count > 0 => Some(0),
-            Some(index) if index + 1 < count => Some(index + 1),
-            _ => None,
-        };
-        match self.pose {
-            Some(index) => println!("Animation pose {index}/{count}"),
-            None => println!("Animation pose: neutral"),
-        }
+    /// Moves the player; returns the camera to switch to, if the player
+    /// entered an RVD region (Go `HandleCameraSwitch`).
+    fn step_player(&mut self, input: PlayerInput, seconds: f32, camera: usize) -> Option<usize> {
+        let gameplay = self.gameplay.as_mut()?;
+        gameplay.player.update(input, &gameplay.collision, seconds);
+        gameplay
+            .switches
+            .region(gameplay.player.position, camera)
+            .map(|region| usize::from(region.cam1))
     }
 
     /// Points the model and masks at a camera. Nothing changes on error.
@@ -112,6 +127,7 @@ pub struct RdtCameraSource {
     pub session: RdtCameraSession,
     pub initial: RdtCameraImage,
     pub model: Option<ModelOverlay>,
+    pub gameplay: Option<Gameplay>,
 }
 
 pub fn run(source: TextureSource) -> AppResult<()> {
@@ -167,6 +183,7 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                 session,
                 initial,
                 model,
+                gameplay,
             } = *source;
             let camera_index = initial.camera_index;
             let description = format!(
@@ -185,12 +202,12 @@ pub fn run(source: TextureSource) -> AppResult<()> {
             )
             .map_err(|error| sdl_error("load the initial RDT camera texture", error))?;
             active_camera = Some((session, camera_index));
-            model_overlay = model;
+            model_overlay = model.map(|model| (model, gameplay));
             initial_background = Some(initial.image);
             renderer
         }
     };
-    let mut model_renderer = if let Some(overlay) = model_overlay {
+    let mut model_renderer = if let Some((overlay, gameplay)) = model_overlay {
         let Some((session, camera_index)) = active_camera.as_ref() else {
             return Err(sdl_error(
                 "initialize PLD model",
@@ -213,6 +230,7 @@ pub fn run(source: TextureSource) -> AppResult<()> {
             animation: Animation::new(),
             pose: None,
             bones: Vec::new(),
+            gameplay,
         };
         scene
             .set_camera(
@@ -234,6 +252,10 @@ pub fn run(source: TextureSource) -> AppResult<()> {
         .timer()
         .map_err(|error| sdl_error("initialize the SDL2 timer", error))?;
     let mut last_ticks = timer.ticks64();
+    // Game controllers (Console Zero / USB pads). Missing support is not fatal.
+    let controller_subsystem = sdl.game_controller().ok();
+    let mut controllers: Vec<GameController> = Vec::new();
+    let mut exit_hold_seconds = 0.0_f64;
 
     'main_loop: loop {
         for event in events.poll_iter() {
@@ -244,8 +266,22 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                     repeat: false,
                     ..
                 } => break 'main_loop,
+                Event::ControllerDeviceAdded { which, .. } => {
+                    if let Some(subsystem) = controller_subsystem.as_ref() {
+                        match subsystem.open(which) {
+                            Ok(controller) => {
+                                println!("Controller connected: {}", controller.name());
+                                controllers.push(controller);
+                            }
+                            Err(error) => eprintln!("Could not open controller {which}: {error}"),
+                        }
+                    }
+                }
+                Event::ControllerDeviceRemoved { which, .. } => {
+                    controllers.retain(|controller| controller.instance_id() != which);
+                }
                 Event::KeyDown {
-                    keycode: Some(Keycode::Left),
+                    keycode: Some(Keycode::PageUp),
                     repeat: false,
                     ..
                 } => {
@@ -259,7 +295,7 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                     }
                 }
                 Event::KeyDown {
-                    keycode: Some(Keycode::Right),
+                    keycode: Some(Keycode::PageDown),
                     repeat: false,
                     ..
                 } => {
@@ -273,12 +309,31 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                     }
                 }
                 Event::KeyDown {
-                    keycode: Some(Keycode::P),
+                    keycode: Some(Keycode::Left),
                     repeat: false,
                     ..
-                } => {
-                    if let Some(scene) = model_renderer.as_mut() {
-                        scene.cycle_pose();
+                } if !playing(&model_renderer) => {
+                    if let Some(active_camera) = active_camera.as_mut() {
+                        switch_camera(
+                            active_camera,
+                            &mut renderer,
+                            model_renderer.as_mut(),
+                            CameraDirection::Previous,
+                        );
+                    }
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::Right),
+                    repeat: false,
+                    ..
+                } if !playing(&model_renderer) => {
+                    if let Some(active_camera) = active_camera.as_mut() {
+                        switch_camera(
+                            active_camera,
+                            &mut renderer,
+                            model_renderer.as_mut(),
+                            CameraDirection::Next,
+                        );
                     }
                 }
                 Event::Window {
@@ -310,6 +365,25 @@ pub fn run(source: TextureSource) -> AppResult<()> {
         let elapsed_seconds = (now.saturating_sub(last_ticks)) as f64 / 1000.0;
         last_ticks = now;
 
+        let (input, exit_combo) = read_input(&events, &controllers);
+        exit_hold_seconds = if exit_combo {
+            exit_hold_seconds + elapsed_seconds
+        } else {
+            0.0
+        };
+        if exit_hold_seconds >= 1.0 {
+            break 'main_loop;
+        }
+        // Large gaps (loading a camera) must not teleport the player.
+        let step = elapsed_seconds.min(0.1) as f32;
+        if let (Some(scene), Some(active)) = (model_renderer.as_mut(), active_camera.as_mut()) {
+            if let Some(target) = scene.step_player(input, step, active.1) {
+                if target != active.1 && target < active.0.camera_count() {
+                    change_camera(active, &mut renderer, Some(scene), target);
+                }
+            }
+        }
+
         renderer.render();
         if let Some(scene) = model_renderer.as_mut() {
             scene.update(elapsed_seconds);
@@ -322,6 +396,36 @@ pub fn run(source: TextureSource) -> AppResult<()> {
     drop(renderer);
     drop(gl_context);
     Ok(())
+}
+
+fn playing(scene: &Option<ModelScene>) -> bool {
+    scene.as_ref().is_some_and(|scene| scene.gameplay.is_some())
+}
+
+/// Keyboard arrows / controller D-pad and left stick drive the tank
+/// controls. START+SELECT held together reports the exit combination used
+/// by the Console Zero launcher.
+fn read_input(events: &sdl2::EventPump, controllers: &[GameController]) -> (PlayerInput, bool) {
+    let keys = events.keyboard_state();
+    let mut input = PlayerInput {
+        forward: keys.is_scancode_pressed(Scancode::Up),
+        backward: keys.is_scancode_pressed(Scancode::Down),
+        left: keys.is_scancode_pressed(Scancode::Left),
+        right: keys.is_scancode_pressed(Scancode::Right),
+    };
+    let mut exit_combo =
+        keys.is_scancode_pressed(Scancode::Return) && keys.is_scancode_pressed(Scancode::Backspace);
+    const DEAD_ZONE: i16 = 16_000;
+    for pad in controllers {
+        let x = pad.axis(Axis::LeftX);
+        let y = pad.axis(Axis::LeftY);
+        input.forward |= pad.button(Button::DPadUp) || y < -DEAD_ZONE;
+        input.backward |= pad.button(Button::DPadDown) || y > DEAD_ZONE;
+        input.left |= pad.button(Button::DPadLeft) || x < -DEAD_ZONE;
+        input.right |= pad.button(Button::DPadRight) || x > DEAD_ZONE;
+        exit_combo |= pad.button(Button::Start) && pad.button(Button::Back);
+    }
+    (input, exit_combo)
 }
 
 fn configure_opengles(video: &sdl2::VideoSubsystem) {
@@ -461,7 +565,18 @@ fn switch_camera(
     if next_camera == *current_camera {
         return;
     }
+    change_camera(active_camera, renderer, scene, next_camera);
+}
 
+/// Loads and shows `next_camera`. On any error the previous camera, texture
+/// and masks stay active.
+fn change_camera(
+    active_camera: &mut (RdtCameraSession, usize),
+    renderer: &mut Renderer,
+    scene: Option<&mut ModelScene>,
+    next_camera: usize,
+) {
+    let (session, current_camera) = active_camera;
     let result = (|| {
         let selection = session.load_camera(next_camera)?;
         let camera = *session.rdt().camera(next_camera)?;

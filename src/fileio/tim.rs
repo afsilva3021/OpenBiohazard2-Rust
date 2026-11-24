@@ -18,8 +18,6 @@ pub struct TimImage {
     palette_count: usize,
     /// Row-major A1B5G5R5 words after palette lookup.
     pixels: Vec<u16>,
-    /// Bytes consumed by header, palettes and pixel data (Go `NumBytes`).
-    byte_length: usize,
 }
 
 impl TimImage {
@@ -37,10 +35,6 @@ impl TimImage {
 
     pub fn pixels(&self) -> &[u16] {
         &self.pixels
-    }
-
-    pub fn byte_length(&self) -> usize {
-        self.byte_length
     }
 
     /// Runtime conversion used by Go `resource.convert16BitColor`: every
@@ -166,7 +160,6 @@ pub fn parse_tim(bytes: &[u8]) -> Result<TimImage, String> {
         height,
         palette_count,
         pixels,
-        byte_length: 32 + palette_bytes + data_length,
     })
 }
 

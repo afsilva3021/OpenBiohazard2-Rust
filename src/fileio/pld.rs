@@ -908,8 +908,11 @@ fn read_limited(path: &Path) -> Result<Vec<u8>, String> {
 
 pub(crate) fn parse_pld(bytes: &[u8]) -> Result<PldModel, String> {
     let offsets = parse_directory(bytes)?;
-    let edd = &bytes[offsets[0]..offsets[1]];
+    // Like Go, EDD tables and EMR frames may be read up to the end of the
+    // file (Go opens each section reader with `fileLength - offset`).
+    let edd = &bytes[offsets[0]..];
     let emr = &bytes[offsets[1]..offsets[2]];
+    let emr_to_end = &bytes[offsets[1]..];
     let md1 = &bytes[offsets[2]..offsets[3]];
     let tim = &bytes[offsets[3]..];
 
@@ -924,7 +927,7 @@ pub(crate) fn parse_pld(bytes: &[u8]) -> Result<PldModel, String> {
     // Reuse the validated hierarchy reader, then keep its raw data.
     parse_neutral_skeleton(emr)?;
     let skeleton = read_skeleton(emr)?;
-    let frames = parse_emr_frames(emr, frame_count, skeleton.relative_positions.len())?;
+    let frames = parse_emr_frames(emr_to_end, frame_count, skeleton.relative_positions.len())?;
     let geometry = parse_md1_geometry(md1, skeleton.relative_positions.len())?;
     let texture = super::tim::parse_tim(tim).map_err(|error| format!("PLD texture: {error}"))?;
 
@@ -1212,7 +1215,7 @@ mod tests {
         put_u32(&mut bytes, 4, 4);
         // Move the MD1 section boundary into the EMR header.
         let directory_start = bytes.len() - 16;
-        put_u32(&mut bytes, directory_start + 1 * 4, 29);
+        put_u32(&mut bytes, directory_start + 4, 29);
         assert!(parse_static_pld(&bytes).is_err());
 
         let mut emr = vec![0_u8; 29];
@@ -1236,7 +1239,7 @@ mod tests {
         let mut edd = vec![0_u8; 4];
         put_u16(&mut edd, 0, 2);
         put_u16(&mut edd, 2, 4);
-        edd.extend_from_slice(&(0_u32 | (5 << 12)).to_le_bytes()); // frame 0, flag 5
+        edd.extend_from_slice(&(5_u32 << 12).to_le_bytes()); // frame 0, flag 5
         edd.extend_from_slice(&1_u32.to_le_bytes()); // frame 1
 
         // EMR: header, one bone offset, armature, mesh-id list, frames at 20.

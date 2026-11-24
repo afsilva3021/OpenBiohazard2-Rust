@@ -176,16 +176,6 @@ impl ModelRenderer {
         self.view_projection = view_projection;
     }
 
-    pub fn update_camera(
-        &mut self,
-        camera: &RdtCamera,
-        projection_aspect: f32,
-        screen_fit: [f32; 2],
-    ) -> Result<(), String> {
-        self.view_projection = self.prepare_camera(camera, projection_aspect, screen_fit)?;
-        Ok(())
-    }
-
     /// Draws every MD1 component with its bone transform. The caller is
     /// responsible for the depth buffer contents (background masks).
     pub fn render(&self, placement: &Placement, bones: &[Mat4]) {

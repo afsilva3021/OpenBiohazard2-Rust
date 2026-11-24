@@ -42,7 +42,7 @@ SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt data/Pl0/Rdt/R
 
 While this window is open, press **Left** or **Right** to move to the previous or next camera. Navigation wraps across the cameras that have an unambiguous Go `roomcut.bin` slot. The selected background is decoded and uploaded only after a key press; the program keeps one room image/texture at a time. If reading or uploading a camera fails, it logs the error and leaves the current image visible. Press **Esc** to exit.
 
-## Inspect and render a static PLD model
+## Inspect a PLD model
 
 Inspect the verified player model before opening a graphics context:
 
@@ -50,15 +50,39 @@ Inspect the verified player model before opening a graphics context:
 ./target/release/openbiohazard2-rust --inspect-pld data/Pl0/PLD/PL00.PLD
 ```
 
-Render that model over a selected room camera:
+## Play a room
+
+Walk the player model through a room with textures, animation, camera masks, collision and automatic camera switching:
 
 ```bash
-SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --rdt-model data/Pl0/Rdt/ROOM1000.RDT 0 data/Pl0/PLD/PL00.PLD
+SDL_VIDEODRIVER=kmsdrm ./target/release/openbiohazard2-rust --play data/Pl0/Rdt/ROOM1000.RDT 0 data/Pl0/PLD/PL00.PLD
 ```
 
-The current static diagnostic uses the Go engine's debug starting transform for `ROOM1000.RDT` (stage 1, room 0, player 0), applies the neutral EMR skeleton pose, and draws the untextured model in magenta with an OpenGL ES 2.0 depth buffer. Left/Right still switch room cameras; the 3D camera matrices are updated with each selection. This is a geometry and projection check, not a gameplay spawn. Other RDT identities are rejected until their placement is verified. PLD textures, animation, and PRI mask composition are not implemented, so the model can appear in front of scenery that should occlude it.
+`--rdt-model` is kept as an alias of `--play`.
 
-The parser reads the 100-byte RDT core header, RID camera records, and PRI mask counts. It does not compose camera masks or load other RDT sections. To validate/export a selected camera without opening SDL/OpenGL:
+| Input | Keyboard | Controller |
+| --- | --- | --- |
+| Walk forward / backward | Up / Down | D-pad or left stick |
+| Turn | Left / Right | D-pad or left stick |
+| Previous / next camera (debug) | Page Up / Page Down | — |
+| Quit | Esc, or Enter+Backspace held 1 s | Start+Select (Back) held 1 s |
+
+What runs in this mode:
+
+- **Model:** PLD mesh with its TIM texture (4/8-bit palettes, Go's per-page UV offset), drawn per MD1 component with that component's bone matrix.
+- **Animation:** EDD tables and EMR frames (12-bit angles), 30 ms per frame. Idle uses the neutral skeleton (Go pose −1), walking uses pose 0 and walking backward pose 1, as in Go `game/player.go`.
+- **Camera masks:** PRI tiles from the RDT and the mask TIM stored after the background in `roomcut.bin` are drawn into the depth buffer at Go's `depth × 32` distance, so the player walks behind scenery.
+- **Collision:** SCA rectangles, triangles, circles and ellipses per floor, plus ramps/stairs height and box climbing (Go `world/collision.go`).
+- **Camera switching:** RVD regions switch to the region's `cam1` when the player enters them (Go `world/cameraswitch.go`).
+- **Start position:** Go's debug locations (`game/debug.go`) for ROOM1000, 1010, 1020, 1180, 1190, 11A0 and 11B0 with Go's 180° start rotation. Other rooms are rejected until script-driven spawns are migrated.
+
+Not migrated yet: doors and room transitions (SCD scripts/AOT), items, enemies, environment lighting (RDT LIT; the model is shown at full texture brightness), sound and menus.
+
+### Console Zero cartridge
+
+`console-zero/` contains a native cartridge for the Console Zero launcher: copy `info.lua`, `jogo`, the aarch64 release binary and your own `data/` folder into one folder on the JOGOS partition. The Console Zero image needs SDL2 with KMSDRM and OpenGL ES (`BR2_PACKAGE_SDL2=y`, `BR2_PACKAGE_SDL2_KMSDRM=y`, `BR2_PACKAGE_SDL2_OPENGLES=y`). Start+Select held for one second returns to the launcher.
+
+The RDT reader parses the core header, RID cameras, PRI mask tiles, SCA collision and RVD camera switches. To validate/export a selected camera without opening SDL/OpenGL:
 
 ```bash
 mkdir -p target/diagnostics

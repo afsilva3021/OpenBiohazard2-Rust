@@ -241,3 +241,39 @@ In the window, Left/Right select cameras and Escape exits. Startup logs report c
 | SDL/OpenGL ES overlay on Raspberry Pi Zero 2 W | Not run here; no Pi/KMSDRM display is attached. The previously user-confirmed VC4/GLES2 base renderer is reused, but the new depth-tested model pass still needs visual verification on the Pi. |
 
 CPU parsing and the Go geometry comparison show that PL00's static mesh is structurally valid and that its neutral hierarchy translation matches the Go output. They do not prove ideal framing on every camera or hardware depth-buffer behavior. PLD variants other than the installed `PL00.PLD`, animated poses, material/texture rendering, masks, and gameplay placement remain unverified or out of scope. No game files, generated diagnostic JSON/PNGs, or Go source changes are tracked.
+
+## Etapas 8–11 — playable room
+
+These stages turn the static overlay into a playable room. The Go tree was again used read-only as the behavioral reference.
+
+| Go source | Rust | Behavior |
+| --- | --- | --- |
+| `fileio/tim.go` | `fileio/tim.rs` | 4/8-bit TIM, one palette per equal-width column band; 4-bit pixels take the palette of their byte's even column, exactly as Go |
+| `fileio/md1.go`, `geometry/md1geometry.go` | `pld::parse_md1_geometry`, `pld::parse_pld` | Component-local corners with raw UV and texture page; UV = `(u + page&3 × width/palettes) / width`, `v / height`; quads expanded (v0,v1,v3),(v0,v2,v3) |
+| `fileio/edd.go` | `pld::parse_edd` | Table count = first offset / 4; tables read back to back after the header as 32-bit LSB-first records (12-bit frame id, 20-bit flag) |
+| `fileio/emr.go` | `pld::parse_emr_frames` | 12-byte frame header, then 12-bit LSB-first X/Y/Z angles per bone; only real bones are decoded |
+| `render/animation.go` | `animation::Animation` | 30 ms per EDD entry, looping; pose `None` = Go pose −1 (neutral) |
+| `render/AnimatedEntity.go` | `animation::bone_transforms`, `ModelRenderer::render` | parent × translate(relative) × Rx × Ry × Rz; one draw per MD1 component with its bone matrix; `model × bone × position` |
+| `fileio/rdt_pri.go` | `rdt::parse_pri_masks` | Groups of 8-byte squares / 12-byte rectangles (zero u16 at +6 marks a rectangle) |
+| `render/cameramask.go`, `Camera.NormalizeMaskDepth` | `graphics/mask_renderer.rs` | Background colors with the mask TIM's alpha per tile; tile depth = NDC z of `from + dir × depth × 32` |
+| `fileio/rdt_sca.go`, `world/collision.go` | `world::parse_sca`, `world::check_collision` | Count−1 elements; shapes 0–3, 6–12; per-floor bit mask; ramps/stairs and box climbing |
+| `fileio/rdt_rvd.go`, `world/cameraswitch.go` | `world::parse_rvd`, `world::CameraSwitches` | Up to 100 records ending in 0xFF×4; per-camera transition lists including Go's "last cam1 = 0" rule |
+| `game/player.go`, `game/debug.go` | `world::Player`, `main::go_diagnostic_player_transform` | 4000/1000 units/s forward/backward, 100°/s turning, poses 0/1; Go's seven stage-1 debug start points |
+
+### Intentional differences from Go
+
+- **Animation actually advances.** Go's `updateTransforms` only rebuilds bone matrices when the pose number changes, so a walk cycle stays on its first frame. Rust rebuilds them every frame (15 bones).
+- **No `gl_FragDepth` in GLES 2.0.** Go writes depth 1 for transparent mask pixels; Rust `discard`s them, which writes neither color nor depth.
+- **Bad PRI data drops only that camera's masks** (with a warning) instead of failing the whole room.
+- **Unknown or empty animation tables fall back to the neutral pose** instead of indexing out of range; floor numbers outside 0–31 never match a collision shape instead of panicking.
+- **EMR frames past the bone count are not decoded.** Go reads `floor(remain × 8 / 12)` angle triples, more than the element holds, and never uses the extra ones.
+- **Lighting is not applied.** Go multiplies the texture by the RDT LIT environment light; the model is shown at full texture brightness until LIT is migrated.
+
+### Validation
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` | Passed |
+| `cargo test` | Passed: 45 tests, including TIM palette bands, LSB bitfields, a full synthetic PLD (EDD/EMR/MD1/TIM, page UV offset), animation timing, bone hierarchy rotation, PRI alpha composition and depth ordering, collision shapes, tank movement, ramps and RVD transition rules |
+| GLES runtime smoke test | Passed under Xvfb with Mesa llvmpipe, using **synthetic** files only (a two-box textured figure, a one-camera room with one mask tile and one wall): shaders compile and link, the textured model animates while walking, and the mask tile hides the part of the model behind it |
+| Real game data on the Pi | **Not run here** (no game files or Pi in this environment). Needs: `--inspect-pld data/Pl0/PLD/PL00.PLD`, then `--play data/Pl0/Rdt/ROOM1000.RDT 0 data/Pl0/PLD/PL00.PLD` with `SDL_VIDEODRIVER=kmsdrm` |

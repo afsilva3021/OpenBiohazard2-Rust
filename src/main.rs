@@ -3,6 +3,7 @@ mod app;
 mod fileio;
 mod graphics;
 mod math;
+mod world;
 
 use std::{env, ffi::OsString, path::PathBuf, process};
 
@@ -84,11 +85,12 @@ fn run() -> Result<(), String> {
                     session,
                     initial,
                     model: None,
+                    gameplay: None,
                 },
             )))
             .map_err(|error| error.to_string())
         }
-        "--rdt-model" if (4..=5).contains(&args.len()) => {
+        "--rdt-model" | "--play" if (4..=5).contains(&args.len()) => {
             let rdt_path = PathBuf::from(&args[1]);
             let camera_index = parse_index(&args[2])?;
             let pld_path = PathBuf::from(&args[3]);
@@ -106,6 +108,7 @@ fn run() -> Result<(), String> {
                 "PLD placement: Go debug start position {position:?}, yaw={yaw_degrees}° (not a gameplay spawn)"
             );
             print_rdt(&rdt);
+            let gameplay = load_gameplay(&rdt, position, yaw_degrees);
             let mut session = fileio::rdt::RdtCameraSession::open(rdt, &bin_path, camera_index)?;
             let initial = session.load_camera(camera_index)?;
             app::report_camera(&session, &initial)?;
@@ -121,6 +124,7 @@ fn run() -> Result<(), String> {
                             yaw_degrees,
                         },
                     }),
+                    gameplay: Some(gameplay),
                 },
             )))
             .map_err(|error| error.to_string())
@@ -245,15 +249,52 @@ fn go_diagnostic_player_transform(rdt: &fileio::rdt::RdtFile) -> Result<([f32; 3
             rdt.path().display()
         )
     })?;
-    if identity.stage != 1 || identity.room != 0 || identity.player != 0 {
-        return Err(format!(
-            "no verified Go debug player transform is available for stage {}, room 0x{:02x}, player {}; only ROOM1000 has an inspected diagnostic location",
-            identity.stage, identity.room, identity.player
-        ));
+    // Migrated from Go game/debug.go `DebugLocations` (stage 1 only) and the
+    // 180° start rotation in main.go. These are the source engine's debug
+    // start points, not script-driven gameplay spawns.
+    let position = match (identity.stage, identity.room) {
+        (1, 0x00) => [18_800.0, 0.0, -3_160.0],
+        (1, 0x01) => [-15_047.0, 0.0, -11_799.0],
+        (1, 0x02) => [-25_059.0, 0.0, 20_944.0],
+        (1, 0x18) => [-9_212.0, 0.0, 2_520.0],
+        (1, 0x19) => [-6_168.0, 0.0, -15_445.0],
+        (1, 0x1a) => [-7_250.0, 0.0, -550.0],
+        (1, 0x1b) => [-8_353.0, 0.0, -20_638.0],
+        _ => {
+            return Err(format!(
+                "no Go debug start position for stage {}, room 0x{:02x}; available: ROOM1000, 1010, 1020, 1180, 1190, 11A0, 11B0",
+                identity.stage, identity.room
+            ))
+        }
+    };
+    Ok((position, 180.0))
+}
+
+/// SCA collision and RVD camera switches. A room whose sections cannot be
+/// read still opens, just without walls or automatic camera changes.
+fn load_gameplay(
+    rdt: &fileio::rdt::RdtFile,
+    position: [f32; 3],
+    yaw_degrees: f32,
+) -> app::Gameplay {
+    let collision = world::parse_sca(rdt).unwrap_or_else(|error| {
+        eprintln!("Collision disabled: {error}");
+        Vec::new()
+    });
+    let switches = world::parse_rvd(rdt).unwrap_or_else(|error| {
+        eprintln!("Automatic camera switching disabled: {error}");
+        Vec::new()
+    });
+    println!(
+        "Gameplay: {} collision shapes, {} camera-switch regions",
+        collision.len(),
+        switches.len()
+    );
+    app::Gameplay {
+        player: world::Player::new(position, yaw_degrees),
+        collision,
+        switches: world::CameraSwitches::new(switches, rdt.cameras.len()),
     }
-    // Migrated from Go game/debug.go and main.go; this is a diagnostic start
-    // position in the source engine, not a gameplay spawn or inferred constant.
-    Ok(([18_800.0, 0.0, -3_160.0], 180.0))
 }
 
 fn print_rdt(rdt: &fileio::rdt::RdtFile) {
@@ -316,14 +357,15 @@ fn print_usage() {
          cargo run --release -- --adt INPUT.ADT\n\
          cargo run --release -- --bin INPUT.BIN ENTRY_INDEX\n\
          cargo run --release -- --rdt INPUT.RDT [CAMERA_INDEX [ROOMCUT.BIN]]\n\
-         cargo run --release -- --rdt-model INPUT.RDT CAMERA_INDEX MODEL.PLD [ROOMCUT.BIN]\n\
+         cargo run --release -- --play INPUT.RDT CAMERA_INDEX MODEL.PLD [ROOMCUT.BIN]\n\
          cargo run --release -- --inspect-pld MODEL.PLD\n\
          cargo run --release -- --decode-rdt INPUT.RDT CAMERA_INDEX OUTPUT.PNG [ROOMCUT.BIN]\n\
          cargo run --release -- --decode-adt INPUT.ADT OUTPUT.PNG\n\
          cargo run --release -- --decode-bin INPUT.BIN ENTRY_INDEX OUTPUT.PNG\n\n\
          With no arguments, the SDL2 window uses assets/test_texture.png.\n\
          --rdt without a camera lists metadata; with a camera it renders the Go-mapped roomcut image.\n\
-         --rdt-model overlays a static, untextured PLD model using the selected RDT camera.\n\
+         --play (alias --rdt-model) walks the textured, animated PLD model through the room:\n\
+         arrows/D-pad move, Page Up/Down switch cameras, Esc or Start+Select (1 s) quits.\n\
          Diagnostic PNG output can be placed under target/diagnostics/ to keep it ignored by Git."
     );
 }
