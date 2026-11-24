@@ -1,6 +1,8 @@
+mod animation;
 mod app;
 mod fileio;
 mod graphics;
+mod math;
 
 use std::{env, ffi::OsString, path::PathBuf, process};
 
@@ -96,10 +98,12 @@ fn run() -> Result<(), String> {
                 .unwrap_or_else(|| PathBuf::from("data/Common/bin/roomcut.bin"));
             let rdt = fileio::rdt::RdtFile::open(&rdt_path)?;
             let (position, yaw_degrees) = go_diagnostic_player_transform(&rdt)?;
-            let model = fileio::pld::load_static_pld(&pld_path)?;
-            report_model(&pld_path, &model);
+            let static_model = fileio::pld::load_static_pld(&pld_path)?;
+            report_model(&pld_path, &static_model);
+            let model = fileio::pld::load_pld(&pld_path)?;
+            report_animation(&model);
             println!(
-                "PLD placement: Go debug start position {position:?}, yaw={yaw_degrees}°; neutral skeleton pose, solid diagnostic color (not gameplay placement)"
+                "PLD placement: Go debug start position {position:?}, yaw={yaw_degrees}° (not a gameplay spawn)"
             );
             print_rdt(&rdt);
             let mut session = fileio::rdt::RdtCameraSession::open(rdt, &bin_path, camera_index)?;
@@ -110,10 +114,12 @@ fn run() -> Result<(), String> {
                 app::RdtCameraSource {
                     session,
                     initial,
-                    model: Some(graphics::model_renderer::ModelOverlay {
+                    model: Some(app::ModelOverlay {
                         model,
-                        position,
-                        yaw_degrees,
+                        placement: graphics::model_renderer::Placement {
+                            position,
+                            yaw_degrees,
+                        },
                     }),
                 },
             )))
@@ -123,6 +129,7 @@ fn run() -> Result<(), String> {
             let path = PathBuf::from(&args[1]);
             let model = fileio::pld::load_static_pld(&path)?;
             report_model(&path, &model);
+            report_animation(&fileio::pld::load_pld(&path)?);
             Ok(())
         }
         "--decode-rdt" if (4..=5).contains(&args.len()) => {
@@ -208,6 +215,26 @@ fn report_model(path: &std::path::Path, model: &fileio::pld::StaticPldModel) {
         model.draw_vertex_count(),
         model.bounds.min,
         model.bounds.max
+    );
+}
+
+fn report_animation(model: &fileio::pld::PldModel) {
+    let tim = &model.texture;
+    println!(
+        "PLD texture: {}×{} TIM, {} palettes; {} animation tables ({}), {} EMR frames, {} GPU vertices in {} components",
+        tim.width(),
+        tim.height(),
+        tim.palette_count(),
+        model.animations.len(),
+        model
+            .animations
+            .iter()
+            .map(|table| table.len().to_string())
+            .collect::<Vec<_>>()
+            .join("/"),
+        model.frames.len(),
+        model.vertices.len(),
+        model.components.len()
     );
 }
 

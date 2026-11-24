@@ -80,9 +80,59 @@ impl<'a> BitReader<'a> {
     }
 }
 
+/// Least-significant-bit-first reader used by EDD/EMR animation data.
+///
+/// Mirrors Go `BitReader.ReadNumBitsLittleEndian`: bits are consumed from bit
+/// 0 upward inside each byte and accumulated into the result starting at its
+/// least significant bit.
+pub(crate) struct LsbBitReader<'a> {
+    bytes: &'a [u8],
+    bit_position: usize,
+}
+
+impl<'a> LsbBitReader<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            bit_position: 0,
+        }
+    }
+
+    pub(crate) fn read_bits(&mut self, count: u32) -> Result<u32, BitstreamError> {
+        if count > 32 {
+            return Err(BitstreamError::new(format!(
+                "cannot read {count} bits into a 32-bit value"
+            )));
+        }
+        let mut value = 0_u32;
+        for bit_index in 0..count {
+            let byte = self
+                .bytes
+                .get(self.bit_position / 8)
+                .ok_or_else(|| BitstreamError::new("unexpected end of little-endian bitstream"))?;
+            if (byte >> (self.bit_position % 8)) & 1 == 1 {
+                value |= 1 << bit_index;
+            }
+            self.bit_position += 1;
+        }
+        Ok(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::BitReader;
+    use super::{BitReader, LsbBitReader};
+
+    #[test]
+    fn reads_little_endian_bitfields_like_go() {
+        // 12-bit 0x321 followed by 20-bit 0xABCDE packed LSB-first in one u32.
+        let word: u32 = 0x321 | (0xABCDE << 12);
+        let bytes = word.to_le_bytes();
+        let mut reader = LsbBitReader::new(&bytes);
+        assert_eq!(reader.read_bits(12), Ok(0x321));
+        assert_eq!(reader.read_bits(20), Ok(0xABCDE));
+        assert!(reader.read_bits(1).is_err());
+    }
 
     #[test]
     fn reads_bits_most_significant_first() {

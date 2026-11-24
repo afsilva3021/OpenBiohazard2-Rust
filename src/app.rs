@@ -6,9 +6,12 @@ use sdl2::{
     video::{GLProfile, SwapInterval},
 };
 
+use crate::animation::{bone_transforms, Animation};
+use crate::fileio::pld::PldModel;
 use crate::fileio::rdt::{RdtCameraImage, RdtCameraSession};
-use crate::graphics::model_renderer::{ModelOverlay, ModelRenderer};
+use crate::graphics::model_renderer::{ModelRenderer, Placement};
 use crate::graphics::renderer::Renderer;
+use crate::math::Mat4;
 
 const WINDOW_WIDTH: u32 = 640;
 const WINDOW_HEIGHT: u32 = 480;
@@ -24,6 +27,52 @@ pub enum TextureSource {
         description: String,
     },
     RdtCamera(Box<RdtCameraSource>),
+}
+
+pub struct ModelOverlay {
+    pub model: PldModel,
+    pub placement: Placement,
+}
+
+/// Animated model state owned by the event loop.
+struct ModelScene {
+    overlay: ModelOverlay,
+    renderer: ModelRenderer,
+    animation: Animation,
+    /// Pose shown while testing: `None` is the neutral skeleton.
+    pose: Option<usize>,
+    bones: Vec<Mat4>,
+}
+
+impl ModelScene {
+    fn update(&mut self, elapsed_seconds: f64) {
+        let model = &self.overlay.model;
+        self.animation
+            .update(self.pose, &model.animations, elapsed_seconds);
+        let frame = self
+            .animation
+            .current_frame()
+            .and_then(|index| model.frames.get(index));
+        bone_transforms(&model.skeleton, frame, &mut self.bones);
+    }
+
+    fn cycle_pose(&mut self) {
+        let count = self.overlay.model.animations.len();
+        self.pose = match self.pose {
+            None if count > 0 => Some(0),
+            Some(index) if index + 1 < count => Some(index + 1),
+            _ => None,
+        };
+        match self.pose {
+            Some(index) => println!("Animation pose {index}/{count}"),
+            None => println!("Animation pose: neutral"),
+        }
+    }
+
+    fn render(&self) {
+        unsafe { gl::Clear(gl::DEPTH_BUFFER_BIT) };
+        self.renderer.render(&self.overlay.placement, &self.bones);
+    }
 }
 
 pub struct RdtCameraSource {
@@ -118,21 +167,28 @@ pub fn run(source: TextureSource) -> AppResult<()> {
             .rdt()
             .camera(*camera_index)
             .map_err(|error| sdl_error("read the initial RDT camera for the model", error))?;
-        let model = ModelRenderer::new(
+        let mut model = ModelRenderer::new(&overlay.model, video.gl_attr().depth_size())
+            .map_err(|error| sdl_error("initialize the PLD model renderer", error))?;
+        model
+            .update_camera(camera, renderer.image_aspect(), renderer.fit_scale())
+            .map_err(|error| sdl_error("set the initial model camera", error))?;
+        Some(ModelScene {
             overlay,
-            camera,
-            renderer.image_aspect(),
-            renderer.fit_scale(),
-            video.gl_attr().depth_size(),
-        )
-        .map_err(|error| sdl_error("initialize the PLD model renderer", error))?;
-        Some(model)
+            renderer: model,
+            animation: Animation::new(),
+            pose: None,
+            bones: Vec::new(),
+        })
     } else {
         None
     };
     let mut events = sdl
         .event_pump()
         .map_err(|error| sdl_error("create the SDL2 event pump", error))?;
+    let timer = sdl
+        .timer()
+        .map_err(|error| sdl_error("initialize the SDL2 timer", error))?;
+    let mut last_ticks = timer.ticks64();
 
     'main_loop: loop {
         for event in events.poll_iter() {
@@ -152,7 +208,7 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                         switch_camera(
                             active_camera,
                             &mut renderer,
-                            model_renderer.as_mut(),
+                            model_renderer.as_mut().map(|scene| &mut scene.renderer),
                             CameraDirection::Previous,
                         );
                     }
@@ -166,9 +222,18 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                         switch_camera(
                             active_camera,
                             &mut renderer,
-                            model_renderer.as_mut(),
+                            model_renderer.as_mut().map(|scene| &mut scene.renderer),
                             CameraDirection::Next,
                         );
+                    }
+                }
+                Event::KeyDown {
+                    keycode: Some(Keycode::P),
+                    repeat: false,
+                    ..
+                } => {
+                    if let Some(scene) = model_renderer.as_mut() {
+                        scene.cycle_pose();
                     }
                 }
                 Event::Window {
@@ -177,11 +242,11 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                 } => {
                     let (drawable_width, drawable_height) = window.drawable_size();
                     renderer.resize(drawable_width, drawable_height);
-                    if let (Some(model), Some((session, camera_index))) =
+                    if let (Some(scene), Some((session, camera_index))) =
                         (model_renderer.as_mut(), active_camera.as_ref())
                     {
                         if let Ok(camera) = session.rdt().camera(*camera_index) {
-                            if let Err(error) = model.update_camera(
+                            if let Err(error) = scene.renderer.update_camera(
                                 camera,
                                 renderer.image_aspect(),
                                 renderer.fit_scale(),
@@ -195,9 +260,14 @@ pub fn run(source: TextureSource) -> AppResult<()> {
             }
         }
 
+        let now = timer.ticks64();
+        let elapsed_seconds = (now.saturating_sub(last_ticks)) as f64 / 1000.0;
+        last_ticks = now;
+
         renderer.render();
-        if let Some(model) = model_renderer.as_ref() {
-            model.render();
+        if let Some(scene) = model_renderer.as_mut() {
+            scene.update(elapsed_seconds);
+            scene.render();
         }
         window.gl_swap_window();
     }
@@ -372,7 +442,7 @@ fn switch_camera(
             &description,
         )?;
         if let (Some(model), Some(mvp)) = (model_renderer.take(), next_mvp) {
-            model.set_mvp(mvp);
+            model.set_view_projection(mvp);
         }
         Ok::<_, String>((selection, camera))
     })();

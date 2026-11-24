@@ -90,7 +90,7 @@ impl Texture {
         Self::upload_rgba(width, height, pixels, &path.display().to_string())
     }
 
-    pub(super) fn from_rgba(
+    pub(crate) fn from_rgba(
         width: u32,
         height: u32,
         pixels: Vec<u8>,
