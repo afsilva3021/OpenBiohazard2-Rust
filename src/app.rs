@@ -7,8 +7,9 @@ use sdl2::{
 };
 
 use crate::animation::{bone_transforms, Animation};
-use crate::fileio::pld::PldModel;
 use crate::fileio::rdt::{RdtCameraImage, RdtCameraSession};
+use crate::fileio::{adt::AdtImage, pld::PldModel};
+use crate::graphics::mask_renderer::MaskRenderer;
 use crate::graphics::model_renderer::{ModelRenderer, Placement};
 use crate::graphics::renderer::Renderer;
 use crate::math::Mat4;
@@ -38,6 +39,9 @@ pub struct ModelOverlay {
 struct ModelScene {
     overlay: ModelOverlay,
     renderer: ModelRenderer,
+    masks: MaskRenderer,
+    /// Background of the active camera, kept to rebuild masks on resize.
+    background: AdtImage,
     animation: Animation,
     /// Pose shown while testing: `None` is the neutral skeleton.
     pose: Option<usize>,
@@ -69,8 +73,37 @@ impl ModelScene {
         }
     }
 
+    /// Points the model and masks at a camera. Nothing changes on error.
+    fn set_camera(
+        &mut self,
+        rdt: &crate::fileio::rdt::RdtFile,
+        camera_index: usize,
+        background: AdtImage,
+        aspect: f32,
+        fit: [f32; 2],
+    ) -> Result<(), String> {
+        let camera = rdt.camera(camera_index)?;
+        let view_projection = self.renderer.prepare_camera(camera, aspect, fit)?;
+        if let Err(error) = self.masks.update(
+            &background,
+            rdt.masks(camera_index),
+            camera,
+            &view_projection,
+            fit,
+        ) {
+            eprintln!("Camera {camera_index}: masks disabled: {error}");
+        }
+        self.renderer.set_view_projection(view_projection);
+        self.background = background;
+        Ok(())
+    }
+
     fn render(&self) {
-        unsafe { gl::Clear(gl::DEPTH_BUFFER_BIT) };
+        unsafe {
+            gl::DepthMask(gl::TRUE);
+            gl::Clear(gl::DEPTH_BUFFER_BIT);
+        }
+        self.masks.render();
         self.renderer.render(&self.overlay.placement, &self.bones);
     }
 }
@@ -111,6 +144,7 @@ pub fn run(source: TextureSource) -> AppResult<()> {
     let (drawable_width, drawable_height) = window.drawable_size();
     let mut active_camera = None;
     let mut model_overlay = None;
+    let mut initial_background = None;
     let mut renderer = match source {
         TextureSource::Png(path) => Renderer::new(drawable_width, drawable_height, path)
             .map_err(|error| sdl_error("load the PNG texture", error))?,
@@ -152,6 +186,7 @@ pub fn run(source: TextureSource) -> AppResult<()> {
             .map_err(|error| sdl_error("load the initial RDT camera texture", error))?;
             active_camera = Some((session, camera_index));
             model_overlay = model;
+            initial_background = Some(initial.image);
             renderer
         }
     };
@@ -163,22 +198,32 @@ pub fn run(source: TextureSource) -> AppResult<()> {
             )
             .into());
         };
-        let camera = session
-            .rdt()
-            .camera(*camera_index)
-            .map_err(|error| sdl_error("read the initial RDT camera for the model", error))?;
-        let mut model = ModelRenderer::new(&overlay.model, video.gl_attr().depth_size())
+        let model = ModelRenderer::new(&overlay.model, video.gl_attr().depth_size())
             .map_err(|error| sdl_error("initialize the PLD model renderer", error))?;
-        model
-            .update_camera(camera, renderer.image_aspect(), renderer.fit_scale())
-            .map_err(|error| sdl_error("set the initial model camera", error))?;
-        Some(ModelScene {
+        let masks = MaskRenderer::new()
+            .map_err(|error| sdl_error("initialize the camera mask renderer", error))?;
+        let background = initial_background
+            .take()
+            .ok_or_else(|| sdl_error("initialize camera masks", "missing initial background"))?;
+        let mut scene = ModelScene {
             overlay,
             renderer: model,
+            masks,
+            background: background.clone(),
             animation: Animation::new(),
             pose: None,
             bones: Vec::new(),
-        })
+        };
+        scene
+            .set_camera(
+                session.rdt(),
+                *camera_index,
+                background,
+                renderer.image_aspect(),
+                renderer.fit_scale(),
+            )
+            .map_err(|error| sdl_error("set the initial model camera", error))?;
+        Some(scene)
     } else {
         None
     };
@@ -208,7 +253,7 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                         switch_camera(
                             active_camera,
                             &mut renderer,
-                            model_renderer.as_mut().map(|scene| &mut scene.renderer),
+                            model_renderer.as_mut(),
                             CameraDirection::Previous,
                         );
                     }
@@ -222,7 +267,7 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                         switch_camera(
                             active_camera,
                             &mut renderer,
-                            model_renderer.as_mut().map(|scene| &mut scene.renderer),
+                            model_renderer.as_mut(),
                             CameraDirection::Next,
                         );
                     }
@@ -245,14 +290,15 @@ pub fn run(source: TextureSource) -> AppResult<()> {
                     if let (Some(scene), Some((session, camera_index))) =
                         (model_renderer.as_mut(), active_camera.as_ref())
                     {
-                        if let Ok(camera) = session.rdt().camera(*camera_index) {
-                            if let Err(error) = scene.renderer.update_camera(
-                                camera,
-                                renderer.image_aspect(),
-                                renderer.fit_scale(),
-                            ) {
-                                eprintln!("Could not update PLD view after resize: {error}");
-                            }
+                        let background = scene.background.clone();
+                        if let Err(error) = scene.set_camera(
+                            session.rdt(),
+                            *camera_index,
+                            background,
+                            renderer.image_aspect(),
+                            renderer.fit_scale(),
+                        ) {
+                            eprintln!("Could not update the 3D view after resize: {error}");
                         }
                     }
                 }
@@ -402,7 +448,7 @@ fn adjacent_camera_index(
 fn switch_camera(
     active_camera: &mut (RdtCameraSession, usize),
     renderer: &mut Renderer,
-    mut model_renderer: Option<&mut ModelRenderer>,
+    scene: Option<&mut ModelScene>,
     direction: CameraDirection,
 ) {
     let (session, current_camera) = active_camera;
@@ -419,16 +465,6 @@ fn switch_camera(
     let result = (|| {
         let selection = session.load_camera(next_camera)?;
         let camera = *session.rdt().camera(next_camera)?;
-        let next_mvp = model_renderer
-            .as_deref()
-            .map(|model| {
-                model.prepare_camera(
-                    &camera,
-                    selection.image.width() as f32 / selection.image.height() as f32,
-                    renderer.fit_scale(),
-                )
-            })
-            .transpose()?;
         let description = format!(
             "{} camera {next_camera} -> {} entry {}",
             session.rdt().path().display(),
@@ -441,11 +477,21 @@ fn switch_camera(
             selection.image.to_rgba(),
             &description,
         )?;
-        if let (Some(model), Some(mvp)) = (model_renderer.take(), next_mvp) {
-            model.set_view_projection(mvp);
-        }
         Ok::<_, String>((selection, camera))
     })();
+    let result = result.and_then(|(selection, camera)| {
+        if let Some(scene) = scene {
+            let aspect = selection.image.width() as f32 / selection.image.height() as f32;
+            scene.set_camera(
+                session.rdt(),
+                selection.camera_index,
+                selection.image.clone(),
+                aspect,
+                renderer.fit_scale(),
+            )?;
+        }
+        Ok((selection, camera))
+    });
 
     match result {
         Ok((selection, camera)) => {
