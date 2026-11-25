@@ -1,0 +1,17 @@
+#!/bin/sh
+# Inicializador do cartucho nativo para o Console Zero.
+# Estrutura esperada nesta pasta:
+#   jogo                  este script
+#   openbiohazard2-rust   binário compilado para o Pi (aarch64)
+#   info.lua
+#   data/                 arquivos do SEU jogo original (não distribuídos)
+cd "$(dirname "$0")" || exit 1
+
+if [ ! -f data/Pl0/Rdt/ROOM1000.RDT ] || [ ! -f data/Common/bin/roomcut.bin ]; then
+    echo "Copie os arquivos do jogo original para $(pwd)/data" >&2
+    exit 1
+fi
+
+# Sem servidor gráfico: SDL2 desenha direto na tela (KMS/DRM, OpenGL ES 2.0)
+export SDL_VIDEODRIVER=kmsdrm
+exec ./openbiohazard2-rust --play data/Pl0/Rdt/ROOM1000.RDT 0 data/Pl0/PLD/PL00.PLD

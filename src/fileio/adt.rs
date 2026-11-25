@@ -15,7 +15,7 @@ const MAX_COMPRESSED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_DECOMPRESSED_BYTES: usize = 4 * 1024 * 1024;
 const MAX_BLOCKS: usize = 4096;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AdtImage {
     width: u32,
     height: u32,

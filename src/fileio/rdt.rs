@@ -129,11 +129,30 @@ pub struct RdtCamera {
     pub fov_degrees: f32,
 }
 
+/// One PRI mask tile (Go `MaskRectangle`): a region of the room's mask TIM
+/// placed over the 320×240 background at a camera-space depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaskRect {
+    pub src_x: u16,
+    pub src_y: u16,
+    pub dest_x: i32,
+    pub dest_y: i32,
+    /// Distance along the camera direction in units of 32 world units.
+    pub depth: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
 pub struct RdtFile {
     path: PathBuf,
     pub header: RdtHeader,
     pub cameras: Vec<RdtCamera>,
+    /// PRI mask tiles per camera (empty when the camera has none).
+    pub camera_masks: Vec<Vec<MaskRect>>,
     pub identity: Option<RoomIdentity>,
+    /// Raw file kept for the gameplay sections (SCA collision, RVD switches).
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) offsets: Vec<u32>,
 }
 
 pub struct RdtCameraImage {
@@ -321,6 +340,7 @@ impl RdtFile {
         };
 
         let mut cameras = Vec::with_capacity(usize::from(header.num_cameras));
+        let mut camera_masks = Vec::with_capacity(usize::from(header.num_cameras));
         for (index, record) in camera_bytes
             .as_chunks::<RID_CAMERA_SIZE>()
             .0
@@ -349,6 +369,20 @@ impl RdtFile {
                     })?,
                 )
             };
+            let masks = if raw_mask_offset == NO_MASK_OFFSET {
+                Vec::new()
+            } else {
+                // Go rejects the whole room on a bad mask; Rust keeps the
+                // room usable and only drops that camera's masks.
+                parse_pri_masks(bytes, raw_mask_offset).unwrap_or_else(|error| {
+                    eprintln!(
+                        "RDT {} camera {index}: ignoring PRI masks: {error}",
+                        path.display()
+                    );
+                    Vec::new()
+                })
+            };
+            camera_masks.push(masks);
             cameras.push(RdtCamera {
                 flag,
                 distance_to_screen,
@@ -365,9 +399,76 @@ impl RdtFile {
             path: path.to_owned(),
             header,
             cameras,
+            camera_masks,
             identity,
+            bytes: bytes.to_vec(),
+            offsets,
         })
     }
+
+    pub fn masks(&self, camera: usize) -> &[MaskRect] {
+        self.camera_masks.get(camera).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// Go `LoadRDT_PRI`: relative-offset groups followed by 8-byte squares or
+/// 12-byte rectangles (a zero u16 at byte 6 marks a rectangle).
+pub(crate) fn parse_pri_masks(bytes: &[u8], offset: u32) -> Result<Vec<MaskRect>, String> {
+    let header = checked_slice(bytes, offset, PRI_HEADER_SIZE, "PRI mask header")?;
+    let group_count = u16::from_le_bytes([header[0], header[1]]);
+    let declared_masks = u16::from_le_bytes([header[2], header[3]]);
+    if group_count == u16::MAX || declared_masks == u16::MAX {
+        return Ok(Vec::new());
+    }
+    let groups = checked_slice(
+        bytes,
+        offset + PRI_HEADER_SIZE as u32,
+        usize::from(group_count) * PRI_RELATIVE_OFFSET_SIZE,
+        "PRI relative-offset table",
+    )?;
+    let mut cursor = offset as usize + PRI_HEADER_SIZE + groups.len();
+    let mut masks = Vec::new();
+    for group in groups.as_chunks::<PRI_RELATIVE_OFFSET_SIZE>().0 {
+        let count = u16::from_le_bytes([group[0], group[1]]);
+        let base_x = i32::from(i16::from_le_bytes([group[4], group[5]]));
+        let base_y = i32::from(i16::from_le_bytes([group[6], group[7]]));
+        for _ in 0..count {
+            if masks.len() >= usize::from(declared_masks) {
+                return Err(format!(
+                    "PRI lists more masks than its header count {declared_masks}"
+                ));
+            }
+            let flag = checked_slice(bytes, (cursor + 6) as u32, 2, "PRI mask flag")?;
+            let is_rectangle = u16::from_le_bytes([flag[0], flag[1]]) == 0;
+            let size = if is_rectangle { 12 } else { 8 };
+            let record = checked_slice(bytes, cursor as u32, size, "PRI mask record")?;
+            let (width, height) = if is_rectangle {
+                (read_u16(record, 8), read_u16(record, 10))
+            } else {
+                let side = read_u16(record, 6);
+                (side, side)
+            };
+            let mask = MaskRect {
+                src_x: u16::from(record[0]),
+                src_y: u16::from(record[1]),
+                dest_x: i32::from(record[2]) + base_x,
+                dest_y: i32::from(record[3]) + base_y,
+                depth: read_u16(record, 4),
+                width,
+                height,
+            };
+            if mask.dest_x < 0
+                || mask.dest_y < 0
+                || mask.dest_x + i32::from(width) > 320
+                || mask.dest_y + i32::from(height) > 240
+            {
+                return Err(format!("mask rectangle is out of bounds: {mask:?}"));
+            }
+            masks.push(mask);
+            cursor += size;
+        }
+    }
+    Ok(masks)
 }
 
 fn parse_pri_mask_count(bytes: &[u8], offset: u32) -> Result<u16, String> {
