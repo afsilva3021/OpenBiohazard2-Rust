@@ -30,6 +30,15 @@ pub const PLAYER_TURN_SPEED: f32 = 100.0;
 pub const POSE_WALK: usize = 0;
 pub const POSE_BACKWARD: usize = 1;
 
+/// Played in reverse. Measured on PL00.PLD: with Go's bone transforms, the
+/// stance foot of EDD table 0 slides toward the model's +X (its facing, from
+/// the toes and knee bend) and the EMR root speed is -X, so played forward the
+/// model steps backward while moving forward ("moonwalk"). Reversed, the steps
+/// match the forward motion. Table 1 already matches backward motion.
+pub fn pose_plays_reversed(pose: Option<usize>) -> bool {
+    pose == Some(POSE_WALK)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CollisionEntity {
     pub index: usize,

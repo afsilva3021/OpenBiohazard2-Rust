@@ -68,8 +68,12 @@ impl ModelScene {
             };
         }
         let model = &self.overlay.model;
-        self.animation
-            .update(self.pose, &model.animations, elapsed_seconds);
+        self.animation.update(
+            self.pose,
+            crate::world::pose_plays_reversed(self.pose),
+            &model.animations,
+            elapsed_seconds,
+        );
         let frame = self
             .animation
             .current_frame()
@@ -431,8 +435,16 @@ fn read_input(events: &sdl2::EventPump, controllers: &[GameController]) -> (Play
 fn configure_opengles(video: &sdl2::VideoSubsystem) {
     let gl_attributes = video.gl_attr();
     gl_attributes.set_accelerated_visual(true);
-    gl_attributes.set_context_profile(GLProfile::GLES);
-    gl_attributes.set_context_version(2, 0);
+    if cfg!(windows) && std::env::var_os("OBH2_FORCE_GLES").is_none() {
+        // Windows drivers expose desktop OpenGL; GLES contexts there depend on
+        // vendor extensions or ANGLE. The renderers only use the GL 2.0 subset
+        // shared with GLES 2.0, and the shaders guard `precision` with GL_ES.
+        gl_attributes.set_context_profile(GLProfile::Compatibility);
+        gl_attributes.set_context_version(2, 1);
+    } else {
+        gl_attributes.set_context_profile(GLProfile::GLES);
+        gl_attributes.set_context_version(2, 0);
+    }
     gl_attributes.set_double_buffer(true);
     gl_attributes.set_depth_size(16);
 }

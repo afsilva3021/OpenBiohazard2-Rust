@@ -13,6 +13,7 @@ pub struct Animation {
     frame_index: usize,
     frame_number: usize,
     pose: Option<usize>,
+    reverse: bool,
 }
 
 impl Animation {
@@ -22,8 +23,15 @@ impl Animation {
 
     /// Mirrors Go `UpdateAnimationFrame`. `pose == None` is Go's pose `-1`:
     /// the neutral skeleton without rotations. A pose without a valid table
-    /// is also treated as neutral instead of panicking.
-    pub fn update(&mut self, pose: Option<usize>, tables: &[Vec<EddFrame>], elapsed_seconds: f64) {
+    /// is also treated as neutral instead of panicking. `reverse` plays the
+    /// table from its last entry to its first.
+    pub fn update(
+        &mut self,
+        pose: Option<usize>,
+        reverse: bool,
+        tables: &[Vec<EddFrame>],
+        elapsed_seconds: f64,
+    ) {
         let pose = pose.filter(|&index| tables.get(index).is_some_and(|table| !table.is_empty()));
         if self.pose.is_some() {
             self.total_ms += elapsed_seconds * 1000.0;
@@ -31,10 +39,11 @@ impl Animation {
             self.total_ms = 0.0;
         }
 
-        if self.pose != pose {
+        if self.pose != pose || self.reverse != reverse {
             self.frame_index = 0;
+            self.reverse = reverse;
             if let Some(index) = pose {
-                self.frame_number = tables[index][0].frame_id;
+                self.frame_number = self.entry(&tables[index]).frame_id;
             }
             self.pose = pose;
         }
@@ -47,8 +56,16 @@ impl Animation {
                 if self.frame_index >= table.len() {
                     self.frame_index = 0;
                 }
-                self.frame_number = table[self.frame_index].frame_id;
+                self.frame_number = self.entry(table).frame_id;
             }
+        }
+    }
+
+    fn entry<'a>(&self, table: &'a [EddFrame]) -> &'a EddFrame {
+        if self.reverse {
+            &table[table.len() - 1 - self.frame_index]
+        } else {
+            &table[self.frame_index]
         }
     }
 
@@ -120,16 +137,16 @@ mod tests {
     fn advances_every_30ms_and_loops_like_go() {
         let tables = tables();
         let mut animation = Animation::new();
-        animation.update(None, &tables, 0.016);
+        animation.update(None, false, &tables, 0.016);
         assert_eq!(animation.current_frame(), None);
-        animation.update(Some(0), &tables, 0.016);
+        animation.update(Some(0), false, &tables, 0.016);
         assert_eq!(animation.current_frame(), Some(4));
-        animation.update(Some(0), &tables, 0.031);
+        animation.update(Some(0), false, &tables, 0.031);
         assert_eq!(animation.current_frame(), Some(7));
-        animation.update(Some(0), &tables, 0.031);
+        animation.update(Some(0), false, &tables, 0.031);
         assert_eq!(animation.current_frame(), Some(4));
         // Unknown poses fall back to neutral instead of panicking.
-        animation.update(Some(9), &tables, 0.031);
+        animation.update(Some(9), false, &tables, 0.031);
         assert_eq!(animation.current_frame(), None);
     }
 
@@ -153,5 +170,25 @@ mod tests {
         bone_transforms(&skeleton, Some(&frame), &mut transforms);
         let child = transform_point(&transforms[1], [0.0, 0.0, 0.0]);
         assert!((child[0] - 90.0).abs() < 1e-3 && child[1].abs() < 1e-3);
+    }
+}
+
+#[cfg(test)]
+mod reverse_tests {
+    use super::*;
+
+    #[test]
+    fn reverse_plays_the_table_backwards() {
+        let frame = |frame_id| EddFrame { frame_id, flag: 0 };
+        let tables = vec![vec![frame(4), frame(7), frame(9)]];
+        let mut animation = Animation::new();
+        animation.update(Some(0), true, &tables, 0.016);
+        assert_eq!(animation.current_frame(), Some(9));
+        animation.update(Some(0), true, &tables, 0.031);
+        assert_eq!(animation.current_frame(), Some(7));
+        animation.update(Some(0), true, &tables, 0.031);
+        assert_eq!(animation.current_frame(), Some(4));
+        animation.update(Some(0), true, &tables, 0.031);
+        assert_eq!(animation.current_frame(), Some(9));
     }
 }

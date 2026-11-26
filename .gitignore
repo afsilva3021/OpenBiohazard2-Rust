@@ -4,3 +4,6 @@ data/
 # Rust build artifacts
 target/
 ResidentEvil2-Data.zip
+
+# SDL2 for Windows (scripts/setup-windows.ps1)
+windows/

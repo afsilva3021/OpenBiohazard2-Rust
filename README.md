@@ -4,6 +4,26 @@ Rust migration of [OpenBiohazard2](../OpenBiohazard2). The Go repository is the 
 
 The 640×480 SDL2 window uses GLSL ES 1.00, a VBO rectangle made of two triangles, and a direct RGBA texture upload. The image is decoded once at startup, fitted to the drawable framebuffer without changing its aspect ratio, and released with the renderer. The blue clear color and Escape/close controls remain available. With no arguments the application still shows `assets/test_texture.png`.
 
+## Build and run on Windows (desktop testing)
+
+Windows uses the prebuilt SDL2 Visual C++ libraries and a desktop OpenGL 2.1 context (the renderers only use the GL 2.0 subset shared with GLES 2.0, so the Pi path is unchanged). Requirements: Rust with the `x86_64-pc-windows-msvc` toolchain and the Visual Studio Build Tools (C++ workload). CMake is not needed.
+
+In PowerShell, from the project root:
+
+```powershell
+# Downloads SDL2 into windows\SDL2 (ignored by Git); set SDL2_DIR to use another copy
+powershell -ExecutionPolicy Bypass -File scripts\setup-windows.ps1
+
+cargo build --release
+cargo test
+
+# Test texture, then a playable room (game files in data\, same layout as on the Pi)
+.\target\release\openbiohazard2-rust.exe
+.\target\release\openbiohazard2-rust.exe --play data/Pl0/Rdt/ROOM1000.RDT 0 data/Pl0/PLD/PL00.PLD
+```
+
+`build.rs` adds the SDL2 library folder to the linker path and copies `SDL2.dll` next to the executables in `target\debug` and `target\release`. `SDL_VIDEODRIVER=kmsdrm` is only for the Pi; do not set it on Windows. To test the GLES 2.0 context on Windows (needs a driver with `WGL_EXT_create_context_es2_profile`, or ANGLE), set `OBH2_FORCE_GLES=1`.
+
 ## Build and run on Raspberry Pi Zero 2 W
 
 Install SDL2 development files and build on the Pi so Cargo uses the Pi OS ABI. Run commands from the Rust project root. Keep the proprietary game files in the ignored local `data/` directory using their original capitalization and layout.
